@@ -6,12 +6,27 @@
   "scripts": {
     "dev": "node --watch server/index.js",
     "start": "node server/index.js",
+    "build": "vite build",
+    "frontend:dev": "vite",
     "test": "node tests/run-tests.js"
   },
   "dependencies": {
     "cheerio": "^1.1.0",
+    "clsx": "^2.1.1",
     "fast-xml-parser": "^4.5.3",
+    "lucide-react": "^0.554.0",
+    "motion": "^12.23.24",
     "nodemailer": "^6.10.1",
-    "openai": "^6.1.0"
+    "openai": "^6.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.4",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tailwindcss": "^4.1.14",
+    "vite": "^7.1.10"
   }
 }

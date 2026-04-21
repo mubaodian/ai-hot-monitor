@@ -16,8 +16,9 @@ function createTransporter(settings) {
 
 export async function verifyEmailSettings(settings) {
   if (!settings.smtpHost || !settings.emailTo) {
-    throw new Error('SMTP 或收件人未配置');
+    throw new Error('SMTP 主机或收件人未配置');
   }
+
   const transporter = createTransporter(settings);
   await transporter.verify();
   return true;
@@ -29,7 +30,7 @@ export async function sendFindingEmail(settings, watcher, finding) {
   }
 
   const transporter = createTransporter(settings);
-  const decision = finding.aiDecision;
+  const decision = finding.aiDecision || {};
 
   await transporter.sendMail({
     from: settings.emailFrom,
@@ -40,21 +41,20 @@ export async function sendFindingEmail(settings, watcher, finding) {
       `标题: ${finding.title}`,
       `链接: ${finding.url}`,
       `来源: ${finding.sourceName}`,
-      `热度: ${decision.heatScore}`,
-      `可信度: ${decision.credibility}`,
-      `摘要: ${decision.summary}`,
-      `原因: ${decision.reason}`
+      `热度: ${decision.heatScore ?? '--'}`,
+      `可信度: ${decision.credibility || 'unknown'}`,
+      `摘要: ${decision.summary || finding.snippet || ''}`,
+      `原因: ${decision.reason || ''}`
     ].join('\n'),
     html: `
       <h2>${watcher.name}</h2>
-      <p><strong>标题：</strong>${finding.title}</p>
-      <p><strong>链接：</strong><a href="${finding.url}">${finding.url}</a></p>
-      <p><strong>来源：</strong>${finding.sourceName}</p>
-      <p><strong>热度：</strong>${decision.heatScore}</p>
-      <p><strong>可信度：</strong>${decision.credibility}</p>
-      <p><strong>摘要：</strong>${decision.summary}</p>
-      <p><strong>原因：</strong>${decision.reason}</p>
+      <p><strong>标题:</strong> ${finding.title}</p>
+      <p><strong>链接:</strong> <a href="${finding.url}">${finding.url}</a></p>
+      <p><strong>来源:</strong> ${finding.sourceName}</p>
+      <p><strong>热度:</strong> ${decision.heatScore ?? '--'}</p>
+      <p><strong>可信度:</strong> ${decision.credibility || 'unknown'}</p>
+      <p><strong>摘要:</strong> ${decision.summary || finding.snippet || ''}</p>
+      <p><strong>原因:</strong> ${decision.reason || ''}</p>
     `
   });
 }
-

@@ -2,7 +2,13 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEnvOverrides, envManagedFields } from './env.js';
-import { createId, limitItems, nowIso, pickMaskedSecrets } from './utils.js';
+import {
+  createId,
+  ensureArray,
+  limitItems,
+  nowIso,
+  pickMaskedSecrets
+} from './utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STORE_FILE = path.resolve(__dirname, '../../data/store.json');
@@ -38,7 +44,7 @@ function createDefaultSources() {
       id: 'src_baidu_web',
       name: 'Baidu Search',
       type: 'baidu_web',
-      enabled: false,
+      enabled: true,
       config: {
         queryTemplate: '{query}',
         limit: 8
@@ -101,21 +107,7 @@ function createDefaultState() {
       pollIntervalMs: 60000,
       browserNotificationsEnabled: true
     },
-    watchers: [
-      {
-        id: 'watch_ai_coding',
-        name: 'AI 编程雷达',
-        query: 'AI 编程',
-        scope: '聚焦 AI coding, coding agents, code model, devtool 发布和热门讨论',
-        enabled: true,
-        intervalMinutes: 15,
-        notificationChannels: ['browser', 'email'],
-        sourceIds: [],
-        createdAt: now,
-        updatedAt: now,
-        lastRunAt: null
-      }
-    ],
+    watchers: [],
     sources: createDefaultSources(),
     findings: [],
     notifications: [],
@@ -135,12 +127,159 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function normalizeWatcher(watcher) {
+  if (!watcher?.id || !watcher?.query) {
+    return null;
+  }
+
+  return {
+    id: watcher.id,
+    name: watcher.name || watcher.query,
+    query: watcher.query,
+    scope: watcher.scope || '',
+    enabled: watcher.enabled !== false,
+    intervalMinutes: Number(watcher.intervalMinutes || 15),
+    notificationChannels: ensureArray(watcher.notificationChannels).filter(Boolean),
+    sourceIds: ensureArray(watcher.sourceIds).filter(Boolean),
+    createdAt: watcher.createdAt || nowIso(),
+    updatedAt: watcher.updatedAt || watcher.createdAt || nowIso(),
+    lastRunAt: watcher.lastRunAt || null
+  };
+}
+
+function normalizeSource(source) {
+  if (!source?.id || !source?.type) {
+    return null;
+  }
+
+  return {
+    id: source.id,
+    name: source.name || source.id,
+    type: source.type,
+    enabled: source.enabled !== false,
+    config: source.config && typeof source.config === 'object' ? source.config : {},
+    createdAt: source.createdAt || nowIso(),
+    updatedAt: source.updatedAt || source.createdAt || nowIso()
+  };
+}
+
+function normalizeFinding(finding) {
+  if (!finding?.id || !finding?.watcherId || !finding?.sourceId) {
+    return null;
+  }
+  return finding;
+}
+
+function normalizeNotification(notification) {
+  if (!notification?.id) {
+    return null;
+  }
+  return notification;
+}
+
+function normalizeActivity(activity) {
+  if (!activity?.id || !activity?.type || !activity?.message) {
+    return null;
+  }
+
+  return {
+    ...activity,
+    level: activity.level || 'info',
+    meta: activity.meta && typeof activity.meta === 'object' ? activity.meta : {}
+  };
+}
+
+function normalizeLoadedState(loadedState) {
+  const defaults = createDefaultState();
+  const normalized = {
+    settings: {
+      ...defaults.settings,
+      ...(loadedState?.settings || {})
+    },
+    watchers: Array.isArray(loadedState?.watchers)
+      ? loadedState.watchers.map(normalizeWatcher).filter(Boolean)
+      : [],
+    sources: Array.isArray(loadedState?.sources)
+      ? loadedState.sources.map(normalizeSource).filter(Boolean)
+      : [],
+    findings: Array.isArray(loadedState?.findings)
+      ? loadedState.findings.map(normalizeFinding).filter(Boolean)
+      : [],
+    notifications: Array.isArray(loadedState?.notifications)
+      ? loadedState.notifications.map(normalizeNotification).filter(Boolean)
+      : [],
+    activity: Array.isArray(loadedState?.activity)
+      ? loadedState.activity.map(normalizeActivity).filter(Boolean)
+      : []
+  };
+
+  let restoredDefaultSources = false;
+  if (!normalized.sources.length) {
+    normalized.sources = createDefaultSources();
+    restoredDefaultSources = true;
+  }
+
+  const watcherIds = new Set(normalized.watchers.map((watcher) => watcher.id));
+  const sourceIds = new Set(normalized.sources.map((source) => source.id));
+
+  normalized.findings = normalized.findings
+    .filter((finding) => watcherIds.has(finding.watcherId) && sourceIds.has(finding.sourceId))
+    .slice(-400);
+
+  const findingIds = new Set(normalized.findings.map((finding) => finding.id));
+  normalized.notifications = normalized.notifications
+    .filter((notification) => !notification.findingId || findingIds.has(notification.findingId))
+    .slice(-400);
+
+  if (!normalized.activity.length) {
+    normalized.activity = defaults.activity;
+  } else {
+    normalized.activity = normalized.activity.slice(-400);
+  }
+
+  return {
+    state: normalized,
+    restoredDefaultSources
+  };
+}
+
+function removeRelatedFindings(state, predicate) {
+  const removedFindingIds = new Set();
+  state.findings = state.findings.filter((finding) => {
+    if (predicate(finding)) {
+      removedFindingIds.add(finding.id);
+      return false;
+    }
+    return true;
+  });
+
+  if (!removedFindingIds.size) {
+    return 0;
+  }
+
+  state.notifications = state.notifications.filter(
+    (notification) => !notification.findingId || !removedFindingIds.has(notification.findingId)
+  );
+
+  return removedFindingIds.size;
+}
+
 export async function createStore() {
   await mkdir(path.dirname(STORE_FILE), { recursive: true });
 
   let state;
+  let restoredDefaultSources = false;
+
   try {
-    state = JSON.parse(await readFile(STORE_FILE, 'utf8'));
+    const raw = await readFile(STORE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    const normalized = normalizeLoadedState(parsed);
+    state = normalized.state;
+    restoredDefaultSources = normalized.restoredDefaultSources;
+
+    if (JSON.stringify(parsed) !== JSON.stringify(state)) {
+      await writeFile(STORE_FILE, JSON.stringify(state, null, 2), 'utf8');
+    }
   } catch {
     state = createDefaultState();
     await writeFile(STORE_FILE, JSON.stringify(state, null, 2), 'utf8');
@@ -166,7 +305,18 @@ export async function createStore() {
       sources: clone(state.sources),
       findings: clone(limitItems([...state.findings].reverse(), 80)),
       notifications: clone(limitItems([...state.notifications].reverse(), 80)),
-      activity: clone(limitItems([...state.activity].reverse(), 100))
+      activity: clone(
+        limitItems(
+          [...state.activity]
+            .reverse()
+            .map((item) => ({
+              ...item,
+              level: item.level || 'info',
+              meta: item.meta || {}
+            })),
+          100
+        )
+      )
     };
   }
 
@@ -180,6 +330,16 @@ export async function createStore() {
       createdAt: nowIso()
     });
     state.activity = limitItems(state.activity.slice(-400), 400);
+  }
+
+  if (restoredDefaultSources) {
+    recordActivity(
+      'source',
+      'Source list was empty. Default sources were restored automatically.',
+      { sourceCount: state.sources.length },
+      'warn'
+    );
+    await persist();
   }
 
   return {
@@ -212,13 +372,13 @@ export async function createStore() {
       const now = nowIso();
       const watcher = {
         id: createId('watch'),
-        name: payload.name || payload.query || '未命名监控',
+        name: payload.name || payload.query || 'Untitled watcher',
         query: payload.query || '',
         scope: payload.scope || '',
         enabled: payload.enabled !== false,
         intervalMinutes: Number(payload.intervalMinutes || 15),
-        notificationChannels: payload.notificationChannels || ['browser'],
-        sourceIds: payload.sourceIds || [],
+        notificationChannels: ensureArray(payload.notificationChannels).filter(Boolean),
+        sourceIds: ensureArray(payload.sourceIds).filter(Boolean),
         createdAt: now,
         updatedAt: now,
         lastRunAt: null
@@ -233,7 +393,14 @@ export async function createStore() {
       if (!watcher) {
         throw new Error('Watcher not found');
       }
-      Object.assign(watcher, patch, { updatedAt: nowIso() });
+
+      const next = normalizeWatcher({
+        ...watcher,
+        ...patch,
+        updatedAt: nowIso()
+      });
+
+      Object.assign(watcher, next);
       recordActivity('watcher', `Watcher updated: ${watcher.name}`);
       await persist();
       return watcher;
@@ -243,8 +410,12 @@ export async function createStore() {
       if (index === -1) {
         throw new Error('Watcher not found');
       }
+
       const [removed] = state.watchers.splice(index, 1);
-      recordActivity('watcher', `Watcher removed: ${removed.name}`);
+      const removedCount = removeRelatedFindings(state, (finding) => finding.watcherId === id);
+      recordActivity('watcher', `Watcher removed: ${removed.name}`, {
+        removedFindings: removedCount
+      });
       await persist();
       return removed;
     },
@@ -252,10 +423,10 @@ export async function createStore() {
       const now = nowIso();
       const source = {
         id: createId('src'),
-        name: payload.name || '未命名源',
+        name: payload.name || 'Untitled source',
         type: payload.type || 'rss',
         enabled: payload.enabled !== false,
-        config: payload.config || {},
+        config: payload.config && typeof payload.config === 'object' ? payload.config : {},
         createdAt: now,
         updatedAt: now
       };
@@ -269,7 +440,14 @@ export async function createStore() {
       if (!source) {
         throw new Error('Source not found');
       }
-      Object.assign(source, patch, { updatedAt: nowIso() });
+
+      const next = normalizeSource({
+        ...source,
+        ...patch,
+        updatedAt: nowIso()
+      });
+
+      Object.assign(source, next);
       recordActivity('source', `Source updated: ${source.name}`);
       await persist();
       return source;
@@ -279,8 +457,23 @@ export async function createStore() {
       if (index === -1) {
         throw new Error('Source not found');
       }
+
       const [removed] = state.sources.splice(index, 1);
-      recordActivity('source', `Source removed: ${removed.name}`);
+      const removedCount = removeRelatedFindings(state, (finding) => finding.sourceId === id);
+
+      if (!state.sources.length) {
+        state.sources = createDefaultSources();
+        recordActivity(
+          'source',
+          'All sources were removed. Default sources were restored automatically.',
+          { sourceCount: state.sources.length },
+          'warn'
+        );
+      }
+
+      recordActivity('source', `Source removed: ${removed.name}`, {
+        removedFindings: removedCount
+      });
       await persist();
       return removed;
     },

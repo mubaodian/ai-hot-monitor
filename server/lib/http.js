@@ -31,9 +31,8 @@ export async function readJsonBody(req) {
 
 export async function serveStatic(req, res, publicDir) {
   const requestedPath = new URL(req.url, 'http://127.0.0.1').pathname;
-  const filePath = requestedPath === '/'
-    ? path.join(publicDir, 'index.html')
-    : path.join(publicDir, requestedPath);
+  const filePath =
+    requestedPath === '/' ? path.join(publicDir, 'index.html') : path.join(publicDir, requestedPath);
 
   try {
     const file = await readFile(filePath);
@@ -44,7 +43,20 @@ export async function serveStatic(req, res, publicDir) {
     res.end(file);
     return true;
   } catch {
+    const ext = path.extname(requestedPath).toLowerCase();
+    if (req.method === 'GET' && !ext) {
+      try {
+        const fallback = await readFile(path.join(publicDir, 'index.html'));
+        res.writeHead(200, {
+          'Content-Type': MIME_TYPES['.html']
+        });
+        res.end(fallback);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     return false;
   }
 }
-

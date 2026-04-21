@@ -47,12 +47,12 @@ function heuristicDecision(watcher, item) {
     relevant: score >= 0.34,
     relevanceScore: Math.round(score * 100),
     suspectedImpersonation: false,
-    credibility: item.sourceType === 'twitterapi_io' ? 'medium' : 'medium',
+    credibility: 'medium',
     isOfficial: /openai|anthropic|google|meta|x\.com|twitter\.com|github/i.test(item.url || ''),
     heatScore: heat,
     shouldNotify: score >= 0.45,
     summary: normalizeWhitespace(item.snippet || item.title || '').slice(0, 180),
-    reason: 'AI 未配置，使用启发式规则作为临时判定。',
+    reason: 'AI verification is unavailable, so the app used heuristic scoring.',
     tags: ['heuristic']
   };
 }
@@ -68,75 +68,93 @@ function extractJson(text = '') {
 }
 
 export async function assessFinding({ settings, watcher, item }) {
+  const fallback = heuristicDecision(watcher, item);
+
   if (!settings.openRouterApiKey || !settings.openRouterModel) {
-    return heuristicDecision(watcher, item);
+    return fallback;
   }
 
-  const client = new OpenAI({
-    apiKey: settings.openRouterApiKey,
-    baseURL: 'https://openrouter.ai/api/v1'
-  });
+  try {
+    const client = new OpenAI({
+      apiKey: settings.openRouterApiKey,
+      baseURL: 'https://openrouter.ai/api/v1',
+      maxRetries: 0
+    });
 
-  const completion = await client.chat.completions.create({
-    model: settings.openRouterModel,
-    temperature: 0.1,
-    messages: [
-      {
-        role: 'system',
-        content: [
-          'You are an AI hot topic verifier.',
-          'Decide whether the item is truly relevant to the watcher topic, whether it looks fake or impersonated, and whether it is hot enough to notify.',
-          'Return strict JSON only.'
-        ].join(' ')
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          watcher: {
-            name: watcher.name,
-            query: watcher.query,
-            scope: watcher.scope
-          },
-          item: {
-            title: item.title,
-            url: item.url,
-            snippet: item.snippet,
-            publishedAt: item.publishedAt,
-            sourceType: item.sourceType,
-            sourceName: item.sourceName,
-            author: item.author,
-            metrics: item.metrics
-          },
-          scoringRule: {
-            notifyOnlyWhen: 'relevant and not suspicious and meaningfully hot or official'
-          }
-        })
+    const completion = await client.chat.completions.create({
+      model: settings.openRouterModel,
+      temperature: 0.1,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are an AI hot topic verifier.',
+            'Decide whether the item is truly relevant to the watcher topic, whether it looks fake or impersonated, and whether it is hot enough to notify.',
+            'Return strict JSON only.'
+          ].join(' ')
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            watcher: {
+              name: watcher.name,
+              query: watcher.query,
+              scope: watcher.scope
+            },
+            item: {
+              title: item.title,
+              url: item.url,
+              snippet: item.snippet,
+              publishedAt: item.publishedAt,
+              sourceType: item.sourceType,
+              sourceName: item.sourceName,
+              author: item.author,
+              metrics: item.metrics
+            },
+            scoringRule: {
+              notifyOnlyWhen: 'relevant and not suspicious and meaningfully hot or official'
+            }
+          })
+        }
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'hot_monitor_verdict',
+          strict: true,
+          schema: RESPONSE_SCHEMA
+        }
       }
-    ],
-    response_format: {
-      type: 'json_schema',
-      json_schema: {
-        name: 'hot_monitor_verdict',
-        strict: true,
-        schema: RESPONSE_SCHEMA
-      }
-    }
-  });
+    });
 
-  const content = completion.choices[0]?.message?.content ?? '{}';
-  const parsed = typeof content === 'string' ? extractJson(content) : extractJson(JSON.stringify(content));
+    const content = completion.choices[0]?.message?.content ?? '{}';
+    const parsed =
+      typeof content === 'string' ? extractJson(content) : extractJson(JSON.stringify(content));
 
-  return {
-    relevant: Boolean(parsed.relevant),
-    relevanceScore: clamp(Number(parsed.relevanceScore || 0), 0, 100),
-    suspectedImpersonation: Boolean(parsed.suspectedImpersonation),
-    credibility: ['low', 'medium', 'high'].includes(parsed.credibility) ? parsed.credibility : 'medium',
-    isOfficial: Boolean(parsed.isOfficial),
-    heatScore: clamp(Number(parsed.heatScore || 0), 0, 100),
-    shouldNotify: Boolean(parsed.shouldNotify),
-    summary: normalizeWhitespace(parsed.summary || ''),
-    reason: normalizeWhitespace(parsed.reason || ''),
-    tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8) : []
-  };
+    return {
+      relevant: Boolean(parsed.relevant),
+      relevanceScore: clamp(Number(parsed.relevanceScore || 0), 0, 100),
+      suspectedImpersonation: Boolean(parsed.suspectedImpersonation),
+      credibility: ['low', 'medium', 'high'].includes(parsed.credibility)
+        ? parsed.credibility
+        : 'medium',
+      isOfficial: Boolean(parsed.isOfficial),
+      heatScore: clamp(Number(parsed.heatScore || 0), 0, 100),
+      shouldNotify: Boolean(parsed.shouldNotify),
+      summary: normalizeWhitespace(parsed.summary || ''),
+      reason: normalizeWhitespace(parsed.reason || ''),
+      tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8) : []
+    };
+  } catch (error) {
+    const label =
+      error instanceof OpenAI.APIError
+        ? `AI verification fallback after API error ${error.status || 'unknown'}`
+        : 'AI verification fallback after runtime error';
+
+    return {
+      ...fallback,
+      reason: `${label}: ${normalizeWhitespace(error?.message || 'unknown error')}`.slice(0, 200),
+      tags: [...new Set([...fallback.tags, 'ai-fallback'])]
+    };
+  }
 }
-

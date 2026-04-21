@@ -22,6 +22,8 @@ loadEnvFile();
 const store = await createStore();
 const events = createEventHub();
 
+const QUERY_AWARE_SOURCE_TYPES = new Set(['bing_web', 'baidu_web', 'twitterapi_io']);
+
 async function logActivity(level, type, message, meta = {}) {
   logger[level](message, meta);
   await store.recordActivity(type, message, meta, level);
@@ -30,9 +32,26 @@ async function logActivity(level, type, message, meta = {}) {
 function selectedSources(state, watcher) {
   const enabledSources = state.sources.filter((source) => source.enabled);
   if (!watcher.sourceIds || !watcher.sourceIds.length) {
-    return enabledSources;
+    const queryAwareSources = enabledSources.filter((source) => sourceSupportsWatcherQuery(source));
+    return queryAwareSources.length ? queryAwareSources : enabledSources;
   }
   return enabledSources.filter((source) => watcher.sourceIds.includes(source.id));
+}
+
+function sourceSupportsWatcherQuery(source) {
+  if (QUERY_AWARE_SOURCE_TYPES.has(source.type)) {
+    return true;
+  }
+
+  if (source.type === 'rss') {
+    return Boolean(source.config?.queryTemplate || String(source.config?.feedUrl || '').includes('{query}'));
+  }
+
+  if (source.type === 'webpage') {
+    return Boolean(source.config?.queryTemplate);
+  }
+
+  return false;
 }
 
 function prefilterItems(watcher, source, items) {
@@ -120,6 +139,21 @@ async function runWatcher(watcherId, trigger = 'manual') {
     sourceCount: sources.length,
     query: watcher.query
   });
+
+  if (!sources.length) {
+    await logActivity('warn', 'source', 'No enabled sources available for watcher', {
+      watcherId: watcher.id,
+      trigger,
+      query: watcher.query
+    });
+    await store.touchWatcherRun(watcher.id);
+    events.broadcast('state', store.getPublicState());
+    return {
+      watcherId,
+      createdFindings: 0,
+      status: 'no_sources'
+    };
+  }
 
   const settled = await Promise.all(
     sources.map(async (source) => {
@@ -226,8 +260,7 @@ async function runWatcher(watcherId, trigger = 'manual') {
   await store.touchWatcherRun(watcher.id);
   await logActivity('info', 'sweep', `Sweep finished for ${watcher.name}`, {
     watcherId: watcher.id,
-    createdFindings: createdFindings.length
-    ,
+    createdFindings: createdFindings.length,
     durationMs: Date.now() - startedAt
   });
   events.broadcast('state', store.getPublicState());

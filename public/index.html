@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Hot Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">AI SIGNAL DESK</p>
+          <h1>热点不是等搜到，而是先被监控到。</h1>
+          <p class="hero-text">
+            多源抓取、AI 真假识别、浏览器实时推送、邮件通知。适合盯大模型、AI
+            编程、Agent 发布和圈内突发。
+          </p>
+          <div class="hero-actions">
+            <button id="run-now" class="primary-button">立即巡检</button>
+            <button id="test-email" class="secondary-button">验证邮件</button>
+          </div>
+        </div>
+        <div class="status-panel">
+          <div class="status-kpi">
+            <span>监控任务</span>
+            <strong id="kpi-watchers">0</strong>
+          </div>
+          <div class="status-kpi">
+            <span>已启用源</span>
+            <strong id="kpi-sources">0</strong>
+          </div>
+          <div class="status-kpi">
+            <span>最新发现</span>
+            <strong id="kpi-findings">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <h2>控制台配置</h2>
+            <p>密钥和密码类敏感信息统一写入 `.env`，这里仅维护非敏感运行参数。</p>
+          </div>
+          <form id="settings-form" class="stack-form">
+            <div class="grid-2">
+              <label>
+                <span>OpenRouter Model</span>
+                <input name="openRouterModel" type="text" placeholder="openai/gpt-4.1-mini" />
+              </label>
+              <label>
+                <span>轮询间隔(ms)</span>
+                <input name="pollIntervalMs" type="number" placeholder="60000" />
+              </label>
+              <label>
+                <span>SMTP Host</span>
+                <input name="smtpHost" type="text" placeholder="smtp.example.com" />
+              </label>
+              <label>
+                <span>SMTP Port</span>
+                <input name="smtpPort" type="number" placeholder="587" />
+              </label>
+              <label>
+                <span>发件人</span>
+                <input name="emailFrom" type="text" placeholder="AI Hot Monitor <bot@example.com>" />
+              </label>
+              <label>
+                <span>收件人</span>
+                <input name="emailTo" type="text" placeholder="you@example.com" />
+              </label>
+            </div>
+            <label class="inline-toggle">
+              <input name="smtpSecure" type="checkbox" />
+              <span>SMTP 使用 TLS</span>
+            </label>
+            <label class="inline-toggle">
+              <input name="browserNotificationsEnabled" type="checkbox" checked />
+              <span>允许浏览器原生通知</span>
+            </label>
+            <button class="primary-button" type="submit">保存设置</button>
+          </form>
+        </section>
+
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <h2>监控任务</h2>
+            <p>输入关键词与范围，决定命中后的通知方式和巡检频率。</p>
+          </div>
+          <form id="watcher-form" class="stack-form">
+            <input name="id" type="hidden" />
+            <div class="grid-2">
+              <label>
+                <span>任务名称</span>
+                <input name="name" type="text" placeholder="AI 编程雷达" />
+              </label>
+              <label>
+                <span>关键词</span>
+                <input name="query" type="text" placeholder="AI 编程" required />
+              </label>
+              <label class="full">
+                <span>范围说明</span>
+                <textarea
+                  name="scope"
+                  rows="3"
+                  placeholder="例如：关注 coding agents、代码模型、IDE 插件、官方发布和高热度讨论"
+                ></textarea>
+              </label>
+              <label>
+                <span>间隔(分钟)</span>
+                <input name="intervalMinutes" type="number" value="15" />
+              </label>
+              <label>
+                <span>通知方式</span>
+                <select name="notificationChannels" multiple>
+                  <option value="browser" selected>浏览器</option>
+                  <option value="email" selected>邮件</option>
+                </select>
+              </label>
+            </div>
+            <button class="primary-button" type="submit">保存任务</button>
+          </form>
+          <div id="watchers-list" class="chip-grid"></div>
+        </section>
+
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <h2>信息源</h2>
+            <p>支持 RSS、Bing、百度、微博热搜、网页抓取和 twitterapi.io。</p>
+          </div>
+          <form id="source-form" class="stack-form">
+            <input name="id" type="hidden" />
+            <div class="grid-2">
+              <label>
+                <span>源名称</span>
+                <input name="name" type="text" placeholder="Bing Web Search" required />
+              </label>
+              <label>
+                <span>源类型</span>
+                <select name="type">
+                  <option value="rss">RSS</option>
+                  <option value="bing_web">Bing 网页搜索</option>
+                  <option value="baidu_web">百度搜索</option>
+                  <option value="weibo_hot">微博热搜</option>
+                  <option value="webpage">网页抓取</option>
+                  <option value="twitterapi_io">twitterapi.io</option>
+                </select>
+              </label>
+              <label class="full">
+                <span>配置 JSON</span>
+                <textarea
+                  name="config"
+                  rows="6"
+                  placeholder='{"feedUrl":"https://hnrss.org/newest?q=AI","limit":12}'
+                ></textarea>
+              </label>
+            </div>
+            <label class="inline-toggle">
+              <input name="enabled" type="checkbox" checked />
+              <span>启用该信息源</span>
+            </label>
+            <button class="primary-button" type="submit">保存信息源</button>
+          </form>
+          <div id="sources-list" class="source-list"></div>
+        </section>
+
+        <section class="panel panel-feed">
+          <div class="panel-heading">
+            <h2>热点流</h2>
+            <p>经 AI 处理后的最新发现。命中后会直接进入浏览器推送和邮件链路。</p>
+          </div>
+          <div id="findings-list" class="feed-list"></div>
+        </section>
+
+        <section class="panel panel-feed">
+          <div class="panel-heading">
+            <h2>通知记录</h2>
+            <p>浏览器实时推送和邮件发送状态。</p>
+          </div>
+          <div id="notifications-list" class="feed-list compact"></div>
+        </section>
+
+        <section class="panel panel-feed">
+          <div class="panel-heading">
+            <h2>活动轨迹</h2>
+            <p>调度、抓取、错误和配置变更都会写入这里。</p>
+          </div>
+          <div id="activity-list" class="feed-list compact"></div>
+        </section>
+      </main>
+    </div>
+
+    <template id="feed-card-template">
+      <article class="feed-card">
+        <div class="feed-meta"></div>
+        <h3></h3>
+        <p class="feed-summary"></p>
+        <a class="feed-link" target="_blank" rel="noreferrer">打开原文</a>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>

@@ -1,0 +1,17 @@
+{
+  "name": "ai-hot-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server/index.js",
+    "start": "node server/index.js",
+    "test": "node tests/run-tests.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.1.0",
+    "fast-xml-parser": "^4.5.3",
+    "nodemailer": "^6.10.1",
+    "openai": "^6.1.0"
+  }
+}

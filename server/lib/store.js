@@ -53,6 +53,44 @@ function createDefaultSources() {
       updatedAt: now
     },
     {
+      id: 'src_sogou_web',
+      name: 'Sogou Search',
+      type: 'sogou_web',
+      enabled: true,
+      config: {
+        queryTemplate: '{query}',
+        limit: 8
+      },
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: 'src_so360_web',
+      name: '360 Search',
+      type: 'so360_web',
+      enabled: true,
+      config: {
+        queryTemplate: '{query}',
+        limit: 8
+      },
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: 'src_bilibili_web',
+      name: 'Bilibili Search',
+      type: 'bilibili_web',
+      enabled: true,
+      config: {
+        limit: 6,
+        userLimit: 2,
+        videoLimit: 6,
+        accountFirst: true
+      },
+      createdAt: now,
+      updatedAt: now
+    },
+    {
       id: 'src_weibo_hot',
       name: 'Weibo Hot',
       type: 'weibo_hot',
@@ -217,6 +255,14 @@ function normalizeLoadedState(loadedState) {
   if (!normalized.sources.length) {
     normalized.sources = createDefaultSources();
     restoredDefaultSources = true;
+  } else {
+    const existingSourceIds = new Set(normalized.sources.map((source) => source.id));
+    for (const defaultSource of createDefaultSources()) {
+      if (!existingSourceIds.has(defaultSource.id)) {
+        normalized.sources.push(defaultSource);
+        restoredDefaultSources = true;
+      }
+    }
   }
 
   const watcherIds = new Set(normalized.watchers.map((watcher) => watcher.id));
@@ -335,7 +381,7 @@ export async function createStore() {
   if (restoredDefaultSources) {
     recordActivity(
       'source',
-      'Source list was empty. Default sources were restored automatically.',
+      'Default sources were restored or backfilled automatically.',
       { sourceCount: state.sources.length },
       'warn'
     );

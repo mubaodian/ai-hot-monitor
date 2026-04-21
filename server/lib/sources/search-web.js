@@ -1,87 +1,118 @@
 import * as cheerio from 'cheerio';
-import { normalizeWhitespace, sleep } from '../utils.js';
+import { normalizeWhitespace, parseDateCandidate, sleep } from '../utils.js';
+
+const SEARCH_ENGINES = {
+  bing_web: {
+    buildUrl(query) {
+      return `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+    },
+    extract($, source) {
+      return collectSearchItems($, source, {
+        itemSelector: 'li.b_algo',
+        titleSelector: 'h2 a',
+        snippetSelector: '.b_caption p, .b_snippet',
+        fallbackSnippetSelector: 'p'
+      });
+    }
+  },
+  baidu_web: {
+    buildUrl(query) {
+      return `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`;
+    },
+    extract($, source) {
+      return collectSearchItems($, source, {
+        itemSelector: '.result, .result-op, .c-container',
+        titleSelector: 'h3 a',
+        snippetSelector: '.c-span-last, .content-right_8Zs40, .c-abstract, .c-color-text',
+        fallbackSnippetSelector: 'div, p'
+      });
+    }
+  },
+  sogou_web: {
+    buildUrl(query) {
+      return `https://www.sogou.com/web?query=${encodeURIComponent(query)}`;
+    },
+    extract($, source) {
+      return collectSearchItems($, source, {
+        itemSelector: '.results > .vrwrap, .results > .rb, .vrwrap, .rb',
+        titleSelector: 'h3 a, .vr-title a',
+        snippetSelector: '.str_info, .text-layout, .ft, .attribute, p',
+        fallbackSnippetSelector: 'div, p'
+      });
+    }
+  },
+  so360_web: {
+    buildUrl(query) {
+      return `https://www.so.com/s?q=${encodeURIComponent(query)}`;
+    },
+    extract($, source) {
+      return collectSearchItems($, source, {
+        itemSelector: 'li.res-list, .res-list, .result, .g-card',
+        titleSelector: 'h3 a, .res-title a, a[data-md]',
+        snippetSelector: '.res-desc, .summary, .content, p',
+        fallbackSnippetSelector: 'div, p'
+      });
+    }
+  }
+};
 
 function buildQuery(source, watcher) {
   const template = source.config.queryTemplate || '{query}';
   return template.replaceAll('{query}', watcher.query);
 }
 
-function buildUrl(type, query) {
-  if (type === 'bing_web') {
-    return `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-  }
-  if (type === 'baidu_web') {
-    return `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`;
-  }
-  throw new Error(`Unsupported search source type: ${type}`);
-}
-
-function extractBing($, source) {
+function collectSearchItems($, source, selectors) {
   const items = [];
-  $('li.b_algo').each((index, element) => {
-    const anchor = $(element).find('h2 a').first();
-    const title = normalizeWhitespace(anchor.text());
-    const url = anchor.attr('href') || '';
-    const snippet = normalizeWhitespace($(element).find('.b_caption p').first().text());
-    if (!title || !url) {
-      return;
-    }
-    items.push({
-      externalId: `${source.id}_${index}_${url}`,
-      title,
-      url,
-      snippet,
-      publishedAt: null,
-      sourceType: source.type,
-      sourceName: source.name,
-      author: '',
-      metrics: {},
-      raw: {}
-    });
-  });
-  return items;
-}
 
-function extractBaidu($, source) {
-  const items = [];
-  $('.result, .result-op, .c-container').each((index, element) => {
-    const anchor = $(element).find('h3 a').first();
+  $(selectors.itemSelector).each((index, element) => {
+    const anchor = $(element).find(selectors.titleSelector).first();
     const title = normalizeWhitespace(anchor.text());
-    const url = anchor.attr('href') || '';
+    const url = normalizeWhitespace(anchor.attr('href') || '');
     const snippet = normalizeWhitespace(
-      $(element)
-        .find('.c-span-last, .content-right_8Zs40, .c-abstract, .c-color-text')
-        .first()
-        .text()
+      $(element).find(selectors.snippetSelector).first().text() ||
+        $(element).find(selectors.fallbackSnippetSelector).first().text()
     );
-    if (!title || !url) {
+
+    if (!title || !url || url.startsWith('javascript:')) {
       return;
     }
+
     items.push({
       externalId: `${source.id}_${index}_${url}`,
       title,
       url,
       snippet,
-      publishedAt: null,
+      publishedAt: parseDateCandidate(`${title} ${snippet}`)?.toISOString() || null,
       sourceType: source.type,
       sourceName: source.name,
       author: '',
-      metrics: {},
-      raw: {}
+      metrics: {
+        searchRank: index + 1
+      },
+      raw: {
+        engine: source.type
+      }
     });
   });
+
   return items;
 }
 
 export async function fetchSearchItems({ source, watcher }) {
+  const engine = SEARCH_ENGINES[source.type];
+  if (!engine) {
+    throw new Error(`Unsupported search source type: ${source.type}`);
+  }
+
   const query = buildQuery(source, watcher);
-  const url = buildUrl(source.type, query);
+  const url = engine.buildUrl(query);
 
   await sleep(400 + Math.floor(Math.random() * 300));
 
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
     }
   });
@@ -92,8 +123,7 @@ export async function fetchSearchItems({ source, watcher }) {
 
   const html = await response.text();
   const $ = cheerio.load(html);
-  const items = source.type === 'bing_web' ? extractBing($, source) : extractBaidu($, source);
+  const items = engine.extract($, source);
   const limit = Number(source.config.limit || 8);
   return items.slice(0, limit);
 }
-

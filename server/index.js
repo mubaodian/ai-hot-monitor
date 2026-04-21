@@ -7,6 +7,7 @@ import { createEventHub } from './lib/events.js';
 import { readJsonBody, sendJson, serveStatic } from './lib/http.js';
 import { createLogger } from './lib/logger.js';
 import { sendFindingEmail, verifyEmailSettings } from './lib/notify.js';
+import { buildFindingCandidates } from './lib/quality.js';
 import { createScheduler } from './lib/scheduler.js';
 import { fetchSourceItems } from './lib/sources/index.js';
 import { createStore } from './lib/store.js';
@@ -22,7 +23,14 @@ loadEnvFile();
 const store = await createStore();
 const events = createEventHub();
 
-const QUERY_AWARE_SOURCE_TYPES = new Set(['bing_web', 'baidu_web', 'twitterapi_io']);
+const QUERY_AWARE_SOURCE_TYPES = new Set([
+  'bing_web',
+  'baidu_web',
+  'sogou_web',
+  'so360_web',
+  'bilibili_web',
+  'twitterapi_io'
+]);
 
 async function logActivity(level, type, message, meta = {}) {
   logger[level](message, meta);
@@ -55,7 +63,7 @@ function sourceSupportsWatcherQuery(source) {
 }
 
 function prefilterItems(watcher, source, items) {
-  if (source.type === 'bing_web' || source.type === 'baidu_web' || source.type === 'twitterapi_io') {
+  if (QUERY_AWARE_SOURCE_TYPES.has(source.type)) {
     return items;
   }
 
@@ -190,70 +198,87 @@ async function runWatcher(watcherId, trigger = 'manual') {
 
   const existingKeys = new Set(state.findings.map((finding) => finding.dedupeKey));
   const createdFindings = [];
+  const { candidates, dropped } = buildFindingCandidates({
+    watcher,
+    settledResults: settled
+  });
 
-  for (const result of settled) {
-    if (!result.ok) {
+  if (dropped.length) {
+    await logActivity('debug', 'quality-filter', `Low-quality candidates filtered for ${watcher.name}`, {
+      watcherId: watcher.id,
+      filteredCount: dropped.length,
+      samples: dropped.slice(0, 5).map((item) => ({
+        title: item.title,
+        reliabilityScore: item.quality?.reliabilityScore || 0,
+        sourceNames: item.sourceNames
+      }))
+    });
+  }
+
+  for (const candidate of candidates.slice(0, 12)) {
+    const dedupeKey = dedupeKeyForItem(candidate);
+    if (existingKeys.has(dedupeKey)) {
       continue;
     }
 
-    const { source, items } = result;
-    for (const item of items.slice(0, 8)) {
-      const dedupeKey = dedupeKeyForItem(item);
-      if (existingKeys.has(dedupeKey)) {
-        continue;
-      }
+    existingKeys.add(dedupeKey);
+    const aiDecision = await assessFinding({
+      settings: state.settings,
+      watcher,
+      item: candidate,
+      quality: candidate.quality
+    });
+    logger.debug('AI decision created', {
+      watcherId: watcher.id,
+      sourceId: candidate.sourceId,
+      title: candidate.title,
+      relevant: aiDecision.relevant,
+      shouldNotify: aiDecision.shouldNotify,
+      heatScore: aiDecision.heatScore,
+      credibility: aiDecision.credibility,
+      reliabilityScore: candidate.quality.reliabilityScore,
+      consensusCount: candidate.quality.consensusCount
+    });
 
-      existingKeys.add(dedupeKey);
-      const aiDecision = await assessFinding({
-        settings: state.settings,
-        watcher,
-        item
-      });
-      logger.debug('AI decision created', {
-        watcherId: watcher.id,
-        sourceId: source.id,
-        title: item.title,
-        relevant: aiDecision.relevant,
-        shouldNotify: aiDecision.shouldNotify,
-        heatScore: aiDecision.heatScore,
-        credibility: aiDecision.credibility
-      });
+    const finding = {
+      id: createId('finding'),
+      watcherId: watcher.id,
+      sourceId: candidate.sourceId,
+      sourceIds: candidate.sourceMatches.map((item) => item.sourceId),
+      title: normalizeWhitespace(candidate.title || 'Untitled'),
+      url: candidate.url,
+      snippet: normalizeWhitespace(candidate.snippet || ''),
+      publishedAt: candidate.publishedAt,
+      detectedAt: new Date().toISOString(),
+      sourceType: candidate.sourceType,
+      sourceName: candidate.sourceName,
+      sourceMatches: candidate.sourceMatches,
+      author: candidate.author || '',
+      metrics: candidate.metrics || {},
+      quality: candidate.quality,
+      aiDecision,
+      dedupeKey
+    };
 
-      const finding = {
-        id: createId('finding'),
-        watcherId: watcher.id,
-        sourceId: source.id,
-        title: normalizeWhitespace(item.title || 'Untitled'),
-        url: item.url,
-        snippet: normalizeWhitespace(item.snippet || ''),
-        publishedAt: item.publishedAt,
-        detectedAt: new Date().toISOString(),
-        sourceType: source.type,
-        sourceName: source.name,
-        author: item.author || '',
-        metrics: item.metrics || {},
-        aiDecision,
-        dedupeKey
-      };
+    await store.addFinding(finding);
+    createdFindings.push(finding);
+    await logActivity('debug', 'finding', `Finding stored: ${finding.title}`, {
+      watcherId: watcher.id,
+      sourceId: candidate.sourceId,
+      findingId: finding.id,
+      relevant: aiDecision.relevant,
+      shouldNotify: aiDecision.shouldNotify,
+      heatScore: aiDecision.heatScore,
+      reliabilityScore: candidate.quality.reliabilityScore,
+      consensusCount: candidate.quality.consensusCount
+    });
 
-      await store.addFinding(finding);
-      createdFindings.push(finding);
-      await logActivity('debug', 'finding', `Finding stored: ${finding.title}`, {
-        watcherId: watcher.id,
-        sourceId: source.id,
-        findingId: finding.id,
-        relevant: aiDecision.relevant,
-        shouldNotify: aiDecision.shouldNotify,
-        heatScore: aiDecision.heatScore
-      });
-
-      if (
-        aiDecision.relevant &&
-        !aiDecision.suspectedImpersonation &&
-        (aiDecision.shouldNotify || aiDecision.isOfficial || aiDecision.heatScore >= 70)
-      ) {
-        await notifyFinding(state, watcher, finding);
-      }
+    if (
+      aiDecision.relevant &&
+      !aiDecision.suspectedImpersonation &&
+      (aiDecision.shouldNotify || aiDecision.isOfficial || aiDecision.heatScore >= 70)
+    ) {
+      await notifyFinding(state, watcher, finding);
     }
   }
 

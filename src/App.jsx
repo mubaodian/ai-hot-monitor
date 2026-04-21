@@ -3,13 +3,16 @@ import { motion } from 'motion/react';
 import {
   Activity,
   Bell,
+  CirclePlay,
   Clock3,
   Copy,
   ExternalLink,
   Flame,
+  Globe,
   MailCheck,
   Radar,
   RefreshCw,
+  Rss,
   Search,
   Settings2,
   Sparkles,
@@ -1304,6 +1307,9 @@ function SourcesPage({ form, page, onDelete, onEdit, onFormChange, onPageChange,
                   <option value="rss">RSS</option>
                   <option value="bing_web">Bing 网页搜索</option>
                   <option value="baidu_web">百度搜索</option>
+                  <option value="sogou_web">搜狗搜索</option>
+                  <option value="so360_web">360 搜索</option>
+                  <option value="bilibili_web">Bilibili 搜索</option>
                   <option value="weibo_hot">微博热搜</option>
                   <option value="webpage">网页抓取</option>
                   <option value="twitterapi_io">twitterapi.io</option>
@@ -1652,13 +1658,7 @@ function FindingCard({ finding, watcher, onCopyLink }) {
   return (
     <div className="group relative overflow-hidden rounded-[26px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-5 transition hover:border-[#5cedc3]/22">
       <div className="absolute inset-y-5 left-0 w-px bg-[linear-gradient(180deg,transparent,rgba(89,235,192,0.65),transparent)]" />
-      <div className="pl-3">
-        <div className="mb-3 flex flex-wrap gap-2 text-xs text-white/42">
-          <span>{finding.sourceName}</span>
-          <span>热度 {finding.aiDecision?.heatScore ?? '--'}</span>
-          <span>{formatCredibility(finding.aiDecision?.credibility)}</span>
-          <span>{formatDate(finding.detectedAt || finding.publishedAt)}</span>
-        </div>
+      <div className="flex min-h-full flex-col pl-3">
 
         <h3 className="text-xl font-medium leading-8 text-white">{finding.title}</h3>
 
@@ -1669,24 +1669,43 @@ function FindingCard({ finding, watcher, onCopyLink }) {
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-white/40">
           <ScopeChip>{watcher?.name || '未知任务'}</ScopeChip>
           {finding.author ? <ScopeChip>{finding.author}</ScopeChip> : null}
+          {finding.quality?.hostName ? <ScopeChip>{finding.quality.hostName}</ScopeChip> : null}
           {finding.aiDecision?.isOfficial ? <ScopeChip active>官方信号</ScopeChip> : null}
+          {finding.quality?.consensusCount > 1 ? <ScopeChip active>多源共现</ScopeChip> : null}
           {finding.aiDecision?.suspectedImpersonation ? <ScopeChip>疑似冒充</ScopeChip> : null}
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <a
-            href={finding.url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-full border border-[#5cedc3]/18 bg-[#5cedc3]/10 px-4 py-2 text-sm text-[#ddffe9] transition hover:bg-[#5cedc3]/14"
-          >
-            <ExternalLink className="h-4 w-4" />
-            打开原文
-          </a>
-          <GhostButton onClick={() => onCopyLink(finding.url)}>
-            <Copy className="mr-1 inline h-4 w-4" />
-            复制链接
-          </GhostButton>
+        <div className="mt-5 flex flex-col gap-4 border-t border-white/8 pt-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={finding.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-full border border-[#5cedc3]/18 bg-[#5cedc3]/10 px-4 py-2 text-sm text-[#ddffe9] transition hover:bg-[#5cedc3]/14"
+            >
+              <ExternalLink className="h-4 w-4" />
+              打开原文
+            </a>
+            <GhostButton onClick={() => onCopyLink(finding.url)}>
+              <Copy className="mr-1 inline h-4 w-4" />
+              复制链接
+            </GhostButton>
+          </div>
+
+          <div className="flex flex-col items-start gap-2 self-end text-left sm:items-end sm:text-right">
+            <div className="flex items-center gap-2">
+              <SourceGlyph type={finding.sourceType} label={finding.sourceName} />
+              <span className="text-xs font-medium text-white/70">{finding.sourceName}</span>
+            </div>
+
+            <div className="flex max-w-[28rem] flex-wrap justify-start gap-x-3 gap-y-1 text-[11px] leading-5 text-white/42 tabular-nums sm:justify-end">
+              <FindingMetaItem label="热度" value={finding.aiDecision?.heatScore ?? '--'} />
+              <FindingMetaItem label="可靠性" value={finding.quality?.reliabilityScore ?? '--'} />
+              <FindingMetaItem label="多源" value={finding.quality?.consensusCount ?? 1} />
+              <FindingMetaItem label="可信度" value={formatCredibility(finding.aiDecision?.credibility)} />
+              <FindingMetaItem value={formatDate(finding.detectedAt || finding.publishedAt)} />
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1752,6 +1771,36 @@ function ScopeChip({ active = false, children }) {
       )}
     >
       {children}
+    </span>
+  );
+}
+
+function SourceGlyph({ type, label }) {
+  const { icon: Icon, toneClass, shellClass } = getSourceVisual(type);
+
+  return (
+    <span
+      className={cn(
+        'inline-flex h-8 w-8 items-center justify-center rounded-[12px] border bg-[#08110f]/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]',
+        shellClass
+      )}
+      title={label}
+      aria-label={label}
+    >
+      <Icon className={cn('h-4 w-4', toneClass)} />
+    </span>
+  );
+}
+
+function FindingMetaItem({ label, value }) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  return (
+    <span className="whitespace-nowrap">
+      {label ? `${label} ` : null}
+      <span className="text-white/68">{value}</span>
     </span>
   );
 }
@@ -1943,7 +1992,7 @@ function maybeBrowserNotify(payload, settings) {
 }
 
 function isQueryCapableSource(source) {
-  if (['bing_web', 'baidu_web', 'twitterapi_io'].includes(source.type)) {
+  if (['bing_web', 'baidu_web', 'sogou_web', 'so360_web', 'bilibili_web', 'twitterapi_io'].includes(source.type)) {
     return true;
   }
 
@@ -1995,6 +2044,15 @@ function formatSourceType(type) {
   if (type === 'baidu_web') {
     return '百度搜索';
   }
+  if (type === 'sogou_web') {
+    return '搜狗搜索';
+  }
+  if (type === 'so360_web') {
+    return '360 搜索';
+  }
+  if (type === 'bilibili_web') {
+    return 'Bilibili';
+  }
   if (type === 'weibo_hot') {
     return '微博热搜';
   }
@@ -2005,6 +2063,70 @@ function formatSourceType(type) {
     return 'X API';
   }
   return type === 'rss' ? 'RSS' : type;
+}
+
+function getSourceVisual(type) {
+  if (type === 'bing_web') {
+    return {
+      icon: Search,
+      toneClass: 'text-cyan-300',
+      shellClass: 'border-cyan-400/20'
+    };
+  }
+  if (type === 'baidu_web') {
+    return {
+      icon: Search,
+      toneClass: 'text-blue-300',
+      shellClass: 'border-blue-400/20'
+    };
+  }
+  if (type === 'sogou_web') {
+    return {
+      icon: Search,
+      toneClass: 'text-orange-300',
+      shellClass: 'border-orange-400/20'
+    };
+  }
+  if (type === 'so360_web') {
+    return {
+      icon: Search,
+      toneClass: 'text-emerald-300',
+      shellClass: 'border-emerald-400/20'
+    };
+  }
+  if (type === 'bilibili_web') {
+    return {
+      icon: CirclePlay,
+      toneClass: 'text-pink-300',
+      shellClass: 'border-pink-400/20'
+    };
+  }
+  if (type === 'weibo_hot') {
+    return {
+      icon: Flame,
+      toneClass: 'text-rose-300',
+      shellClass: 'border-rose-400/20'
+    };
+  }
+  if (type === 'twitterapi_io') {
+    return {
+      icon: Radar,
+      toneClass: 'text-sky-300',
+      shellClass: 'border-sky-400/20'
+    };
+  }
+  if (type === 'rss') {
+    return {
+      icon: Rss,
+      toneClass: 'text-amber-300',
+      shellClass: 'border-amber-400/20'
+    };
+  }
+  return {
+    icon: Globe,
+    toneClass: 'text-white/72',
+    shellClass: 'border-white/12'
+  };
 }
 
 function formatNotificationChannel(channel) {
@@ -2057,8 +2179,11 @@ function getSourceConfigHint(type) {
   if (type === 'rss') {
     return 'RSS 建议填写 feedUrl，也可以用 queryTemplate 组合成按关键词查询的 RSS 地址。';
   }
-  if (type === 'bing_web' || type === 'baidu_web') {
+  if (['bing_web', 'baidu_web', 'sogou_web', 'so360_web'].includes(type)) {
     return '搜索型源通常只需要 queryTemplate 和 limit，例如 {"queryTemplate":"{query}","limit":8}。';
+  }
+  if (type === 'bilibili_web') {
+    return 'Bilibili 源会同时尝试获取视频结果和账号结果，可配置 userLimit、videoLimit、accountFirst。';
   }
   if (type === 'weibo_hot') {
     return '微博热搜可只设置 limit，例如 {"limit":15}。';

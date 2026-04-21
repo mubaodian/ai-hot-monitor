@@ -1,3 +1,4 @@
+import { fetchBilibiliItems } from './bilibili.js';
 import { fetchRssItems } from './rss.js';
 import { fetchSearchItems } from './search-web.js';
 import { fetchWeiboHotItems } from './weibo.js';
@@ -10,9 +11,13 @@ export async function fetchSourceItems({ source, watcher, settings }) {
       return fetchRssItems({ source, watcher, settings });
     case 'bing_web':
     case 'baidu_web':
+    case 'sogou_web':
+    case 'so360_web':
       return fetchSearchItems({ source, watcher, settings });
     case 'weibo_hot':
       return fetchWeiboHotItems({ source, watcher, settings });
+    case 'bilibili_web':
+      return fetchBilibiliItems({ source, watcher, settings });
     case 'webpage':
       return fetchWebpageItems({ source, watcher, settings });
     case 'twitterapi_io':
@@ -21,4 +26,3 @@ export async function fetchSourceItems({ source, watcher, settings }) {
       throw new Error(`Unsupported source type: ${source.type}`);
   }
 }
-

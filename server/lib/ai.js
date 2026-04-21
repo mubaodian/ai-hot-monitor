@@ -33,7 +33,7 @@ const RESPONSE_SCHEMA = {
   ]
 };
 
-function heuristicDecision(watcher, item) {
+function heuristicDecision(watcher, item, quality = null) {
   const combined = [
     item.title,
     item.snippet,
@@ -41,18 +41,36 @@ function heuristicDecision(watcher, item) {
     JSON.stringify(item.metrics || {})
   ].join(' ');
   const score = roughMatchScore(combined, `${watcher.query} ${watcher.scope || ''}`);
-  const heat = clamp(Math.round(score * 70 + (item.metrics?.likeCount || 0) / 1000), 0, 100);
+  const reliabilityScore = Number(quality?.reliabilityScore || 0);
+  const consensusCount = Number(quality?.consensusCount || 1);
+  const heat = clamp(
+    Math.round(score * 32 + reliabilityScore * 0.48 + Math.max(consensusCount - 1, 0) * 8),
+    0,
+    100
+  );
+  const credibility =
+    reliabilityScore >= 78 ? 'high' : reliabilityScore >= 56 ? 'medium' : 'low';
+  const isOfficial =
+    quality?.hostClass === 'trusted' &&
+    /openai|anthropic|google|meta|microsoft|github/i.test(item.url || '');
+  const shouldNotify =
+    reliabilityScore >= 72 &&
+    score >= 0.45 &&
+    (consensusCount >= 2 || credibility === 'high');
 
   return {
-    relevant: score >= 0.34,
+    relevant: score >= 0.34 && reliabilityScore >= 45,
     relevanceScore: Math.round(score * 100),
     suspectedImpersonation: false,
-    credibility: 'medium',
-    isOfficial: /openai|anthropic|google|meta|x\.com|twitter\.com|github/i.test(item.url || ''),
+    credibility,
+    isOfficial,
     heatScore: heat,
-    shouldNotify: score >= 0.45,
+    shouldNotify,
     summary: normalizeWhitespace(item.snippet || item.title || '').slice(0, 180),
-    reason: 'AI verification is unavailable, so the app used heuristic scoring.',
+    reason:
+      quality?.reliabilityScore >= 45
+        ? 'AI verification is unavailable, so the app used conservative reliability heuristics.'
+        : 'Candidate reliability is too low, so the app used conservative fallback scoring.',
     tags: ['heuristic']
   };
 }
@@ -67,8 +85,8 @@ function extractJson(text = '') {
   return JSON.parse(trimmed.slice(first, last + 1));
 }
 
-export async function assessFinding({ settings, watcher, item }) {
-  const fallback = heuristicDecision(watcher, item);
+export async function assessFinding({ settings, watcher, item, quality = null }) {
+  const fallback = heuristicDecision(watcher, item, quality);
 
   if (!settings.openRouterApiKey || !settings.openRouterModel) {
     return fallback;
@@ -109,7 +127,8 @@ export async function assessFinding({ settings, watcher, item }) {
               sourceType: item.sourceType,
               sourceName: item.sourceName,
               author: item.author,
-              metrics: item.metrics
+              metrics: item.metrics,
+              quality
             },
             scoringRule: {
               notifyOnlyWhen: 'relevant and not suspicious and meaningfully hot or official'
@@ -117,6 +136,7 @@ export async function assessFinding({ settings, watcher, item }) {
           })
         }
       ],
+      max_tokens: 700,
       response_format: {
         type: 'json_schema',
         json_schema: {

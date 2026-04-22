@@ -2,16 +2,24 @@
 import { motion } from 'motion/react';
 import {
   Activity,
+  BarChart3,
   Bell,
+  Bookmark,
   CirclePlay,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Copy,
+  Eye,
   ExternalLink,
   Flame,
   Globe,
+  Heart,
   MailCheck,
+  MessageCircle,
   Radar,
   RefreshCw,
+  Repeat2,
   Rss,
   Search,
   Settings2,
@@ -451,7 +459,19 @@ function App() {
         return true;
       }
 
-      return [finding.title, finding.snippet, finding.sourceName, finding.author]
+      return [
+        finding.title,
+        finding.snippet,
+        finding.sourceName,
+        finding.author,
+        finding.aiDecision?.summary,
+        finding.aiDecision?.reason,
+        ...(Array.isArray(finding.aiDecision?.tags) ? finding.aiDecision.tags : []),
+        ...(Array.isArray(finding.sourceMatches)
+          ? finding.sourceMatches.map((match) => `${match.sourceName || ''} ${match.searchRank || ''}`)
+          : [])
+      ]
+        .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(findingsKeyword);
@@ -1183,6 +1203,32 @@ function FindingsPage({
   onUpdateControls
 }) {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+  const [expandedReasonIds, setExpandedReasonIds] = useState([]);
+  const pageReasonIds = useMemo(
+    () => page.items.filter((finding) => hasFindingReason(finding)).map((finding) => finding.id),
+    [page.items]
+  );
+  const allReasonsExpanded = pageReasonIds.length > 0 && pageReasonIds.every((id) => expandedReasonIds.includes(id));
+
+  function toggleReason(findingId) {
+    setExpandedReasonIds((current) =>
+      current.includes(findingId) ? current.filter((id) => id !== findingId) : [...current, findingId]
+    );
+  }
+
+  function toggleAllReasons() {
+    setExpandedReasonIds((current) => {
+      if (!pageReasonIds.length) {
+        return current;
+      }
+
+      if (pageReasonIds.every((id) => current.includes(id))) {
+        return current.filter((id) => !pageReasonIds.includes(id));
+      }
+
+      return [...new Set([...current, ...pageReasonIds])];
+    });
+  }
 
   return (
     <PageShell
@@ -1384,14 +1430,37 @@ function FindingsPage({
           ) : null}
         </div>
 
+        {pageReasonIds.length ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-white/8 bg-white/[0.02] px-4 py-3">
+            <div className="text-sm text-white/56">
+              当前页有 <span className="text-white">{pageReasonIds.length}</span> 条热点支持查看 AI 相关性理由
+            </div>
+            <GhostButton onClick={toggleAllReasons}>
+              {allReasonsExpanded ? (
+                <>
+                  <ChevronUp className="mr-1 h-4 w-4" />
+                  收起全部理由
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="mr-1 h-4 w-4" />
+                  展开全部理由
+                </>
+              )}
+            </GhostButton>
+          </div>
+        ) : null}
+
         <div className="space-y-4">
           {page.total ? (
             page.items.map((finding) => (
               <FindingCard
                 key={finding.id}
+                reasonExpanded={expandedReasonIds.includes(finding.id)}
                 finding={finding}
                 watcher={watcherById[finding.watcherId]}
                 onCopyLink={onCopyLink}
+                onToggleReason={() => toggleReason(finding.id)}
               />
             ))
           ) : (
@@ -1977,27 +2046,137 @@ function SourceCard({ source, onDelete, onEdit, onToggle }) {
   );
 }
 
-function FindingCard({ finding, watcher, onCopyLink }) {
+function FindingCard({ finding, watcher, onCopyLink, onToggleReason, reasonExpanded = false }) {
+  const interactionMetrics = getFindingInteractionMetrics(finding);
+  const platformSignals = getFindingPlatformSignals(finding);
+  const sourceMatchDetails = getFindingSourceMatchDetails(finding);
+  const aiTags = Array.isArray(finding.aiDecision?.tags)
+    ? dedupeByKey(finding.aiDecision.tags.filter(Boolean).map(formatAiTag).filter(Boolean))
+    : [];
+  const summaryText = buildChineseAiSummary(finding);
+  const originalSnippet = normalizeWhitespaceSafe(finding.snippet);
+  const localizedReason = buildChineseAiReason(finding);
+  const showOriginalSnippet = Boolean(
+    originalSnippet && normalizeTextForCompare(originalSnippet) !== normalizeTextForCompare(summaryText)
+  );
+
   return (
     <div className="group relative overflow-hidden rounded-[26px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-5 transition hover:border-[#5cedc3]/22">
       <div className="absolute inset-y-5 left-0 w-px bg-[linear-gradient(180deg,transparent,rgba(89,235,192,0.65),transparent)]" />
       <div className="flex min-h-full flex-col pl-3">
-
         <h3 className="text-xl font-medium leading-8 text-white">{finding.title}</h3>
 
-        <p className="mt-3 line-clamp-3 text-sm leading-7 text-white/56">
-          {finding.aiDecision?.summary || finding.snippet || '暂无摘要'}
-        </p>
+        <div className="mt-4">
+          <InfoBlock
+            label="AI 摘要"
+            tone="accent"
+            value={summaryText || originalSnippet || '暂无 AI 摘要'}
+          />
+          {showOriginalSnippet ? (
+            <div className="mt-3 rounded-[18px] border border-white/8 bg-white/[0.02] px-4 py-3">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-white/34">原始片段</div>
+              <p className="mt-2 line-clamp-2 text-sm leading-6 text-white/50">{originalSnippet}</p>
+            </div>
+          ) : null}
+        </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-white/40">
           <ScopeChip>{watcher?.name || '未知任务'}</ScopeChip>
           {finding.author ? <ScopeChip>{finding.author}</ScopeChip> : null}
-          {finding.quality?.hostName ? <ScopeChip>{finding.quality.hostName}</ScopeChip> : null}
-          {finding.aiDecision?.isOfficial ? <ScopeChip active>官方信号</ScopeChip> : null}
           {finding.quality?.consensusCount > 1 ? <ScopeChip active>多源共现</ScopeChip> : null}
           {finding.view?.hasNotification ? <ScopeChip active>已通知 {finding.view.notificationCount}</ScopeChip> : null}
           {finding.aiDecision?.suspectedImpersonation ? <ScopeChip>疑似冒充</ScopeChip> : null}
         </div>
+
+        {aiTags.length ? (
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-white/48">
+            {aiTags.map((tag) => (
+              <TagBadge key={`${finding.id}-tag-${tag.key}`} tag={tag} />
+            ))}
+          </div>
+        ) : null}
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <SignalCard
+            label="发布时间"
+            value={formatDate(finding.publishedAt)}
+            subValue={formatRelativeDate(finding.publishedAt)}
+          />
+          <SignalCard
+            label="发现时间"
+            value={formatDate(finding.detectedAt)}
+            subValue={formatRelativeDate(finding.detectedAt)}
+          />
+          <SignalCard
+            label="热度"
+            value={formatScoreValue(finding.view?.heatScore)}
+            subValue={`相关性 ${formatScoreValue(finding.view?.relevanceScore)}`}
+          />
+          <SignalCard
+            label="可信度"
+            value={formatCredibilityShort(finding.aiDecision?.credibility)}
+            subValue={`可靠性 ${formatScoreValue(finding.quality?.reliabilityScore)}`}
+          />
+          <SignalCard
+            label="来源"
+            value={finding.sourceName}
+            subValue={finding.quality?.hostName || formatSourceType(finding.sourceType)}
+          />
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {interactionMetrics.map((metric) => (
+            <MetricBadge
+              key={`${finding.id}-metric-${metric.label}`}
+              label={metric.label}
+              value={metric.value}
+            />
+          ))}
+          {platformSignals.map((metric) => (
+            <MetricBadge
+              key={`${finding.id}-signal-${metric.label}`}
+              label={metric.label}
+              value={metric.value}
+            />
+          ))}
+          {sourceMatchDetails.map((match) => (
+            <MetricBadge
+              key={`${finding.id}-match-${match.label}`}
+              label={match.label}
+              value={match.value}
+            />
+          ))}
+        </div>
+
+        {hasFindingReason(finding) ? (
+          <div className="mt-4 rounded-[20px] border border-white/8 bg-white/[0.025] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-white">AI 相关性理由</div>
+                <div className="mt-1 text-xs text-white/44">
+                  解释为什么这条内容被判定为相关、可信或值得提醒
+                </div>
+              </div>
+              <GhostButton onClick={onToggleReason}>
+                {reasonExpanded ? (
+                  <>
+                    <ChevronUp className="mr-1 h-4 w-4" />
+                    收起理由
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="mr-1 h-4 w-4" />
+                    展开理由
+                  </>
+                )}
+              </GhostButton>
+            </div>
+
+            {reasonExpanded ? (
+              <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-white/74">{localizedReason}</p>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mt-5 flex flex-col gap-4 border-t border-white/8 pt-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex flex-wrap items-center gap-3">
@@ -2023,11 +2202,10 @@ function FindingCard({ finding, watcher, onCopyLink }) {
             </div>
 
             <div className="flex max-w-[28rem] flex-wrap justify-start gap-x-3 gap-y-1 text-[11px] leading-5 text-white/42 tabular-nums sm:justify-end">
-              <FindingMetaItem label="热度" value={formatScoreValue(finding.view?.heatScore)} />
-              <FindingMetaItem label="可靠性" value={finding.quality?.reliabilityScore ?? '--'} />
+              <FindingMetaItem label="相关性" value={formatScoreValue(finding.view?.relevanceScore)} />
               <FindingMetaItem label="多源" value={finding.quality?.consensusCount ?? 1} />
-              <FindingMetaItem label="可信度" value={formatCredibility(finding.aiDecision?.credibility)} />
-              <FindingMetaItem value={formatDate(finding.detectedAt || finding.publishedAt)} />
+              <FindingMetaItem label="可信度" value={formatCredibilityShort(finding.aiDecision?.credibility)} />
+              <FindingMetaItem label="发现" value={formatDate(finding.detectedAt)} />
             </div>
           </div>
         </div>
@@ -2126,6 +2304,88 @@ function FindingMetaItem({ label, value }) {
       {label ? `${label} ` : null}
       <span className="text-white/68">{value}</span>
     </span>
+  );
+}
+
+function InfoBlock({ label, tone = 'default', value }) {
+  return (
+    <div
+      className={cn(
+        'rounded-[20px] border p-4',
+        tone === 'accent'
+          ? 'border-[#5cedc3]/14 bg-[linear-gradient(180deg,rgba(92,237,195,0.1),rgba(255,255,255,0.02))]'
+          : 'border-white/8 bg-white/[0.025]'
+      )}
+    >
+      <div className="text-xs uppercase tracking-[0.18em] text-white/38">{label}</div>
+      <p
+        className={cn(
+          'mt-2 text-sm leading-7',
+          tone === 'accent' ? 'text-white/88' : 'text-white/70'
+        )}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function SignalCard({ label, subValue, value }) {
+  return (
+    <div className="min-w-[132px] rounded-full border border-white/8 bg-white/[0.028] px-4 py-3">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-white/32">{label}</div>
+      <div className="mt-1 text-sm font-medium text-white">{value || '--'}</div>
+      {subValue ? <div className="mt-1 text-[11px] text-white/38">{subValue}</div> : null}
+    </div>
+  );
+}
+
+function TagBadge({ tag }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs',
+        tag.tone === 'good'
+          ? 'border-emerald-400/18 bg-emerald-400/8 text-emerald-100'
+          : tag.tone === 'warn'
+            ? 'border-amber-400/18 bg-amber-400/8 text-amber-100'
+            : tag.tone === 'risk'
+              ? 'border-rose-400/18 bg-rose-400/8 text-rose-100'
+              : 'border-[#4e72ff]/18 bg-[#4e72ff]/10 text-[#dce4ff]'
+      )}
+    >
+      <span
+        className={cn(
+          'inline-block h-1.5 w-1.5 rounded-full',
+          tag.tone === 'good'
+            ? 'bg-emerald-300'
+            : tag.tone === 'warn'
+              ? 'bg-amber-300'
+              : tag.tone === 'risk'
+                ? 'bg-rose-300'
+                : 'bg-[#8ea7ff]'
+        )}
+      />
+      {tag.label}
+    </span>
+  );
+}
+
+function MetricBadge({ label, value }) {
+  const visual = getMetricVisual(label);
+  const Icon = visual.icon;
+
+  return (
+    <div
+      className="rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs text-white/58"
+      title={`${label} ${value}`}
+    >
+      <span className="inline-flex items-center gap-1.5">
+        {Icon ? <Icon className={cn('h-3.5 w-3.5', visual.iconClassName)} /> : <span>{label}</span>}
+        {!Icon && <span className="text-white/52">{label}</span>}
+        <span className="text-white/84">{value}</span>
+      </span>
+    </div>
   );
 }
 
@@ -2522,6 +2782,345 @@ function countActiveFindingControls(controls) {
   return count;
 }
 
+function normalizeWhitespaceSafe(value = '') {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeTextForCompare(value = '') {
+  return normalizeWhitespaceSafe(value).toLowerCase();
+}
+
+function hasFindingReason(finding) {
+  return Boolean(normalizeWhitespaceSafe(finding?.aiDecision?.reason));
+}
+
+function formatRelativeDate(value) {
+  if (!value) {
+    return '';
+  }
+
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return '';
+  }
+
+  const diffMs = Date.now() - timestamp;
+  if (diffMs < 0) {
+    return '时间待确认';
+  }
+
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+
+  if (diffMs < hourMs) {
+    return `${Math.max(1, Math.floor(diffMs / minuteMs))} 分钟前`;
+  }
+  if (diffMs < dayMs) {
+    return `${Math.floor(diffMs / hourMs)} 小时前`;
+  }
+  if (diffMs < 30 * dayMs) {
+    return `${Math.floor(diffMs / dayMs)} 天前`;
+  }
+
+  return '';
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '--';
+  }
+
+  return new Intl.NumberFormat('zh-CN', {
+    notation: number >= 10000 ? 'compact' : 'standard',
+    maximumFractionDigits: number >= 10000 ? 1 : 0
+  }).format(number);
+}
+
+function getFindingInteractionMetrics(finding) {
+  const metrics = finding.metrics || {};
+  const candidates = [
+    ['点赞', metrics.likeCount],
+    ['回复', metrics.replyCount],
+    ['转发', metrics.retweetCount],
+    ['浏览', metrics.viewCount],
+    ['播放', metrics.playCount],
+    ['收藏', metrics.favoriteCount],
+    ['弹幕', metrics.danmakuCount]
+  ];
+
+  return candidates
+    .filter(([, value]) => Number(value) > 0)
+    .map(([label, value]) => ({
+      label,
+      value: formatCompactNumber(value)
+    }));
+}
+
+function getFindingPlatformSignals(finding) {
+  const metrics = finding.metrics || {};
+  const candidates = [
+    ['粉丝', metrics.followerCount],
+    ['视频', metrics.videoCount],
+    ['搜索位次', metrics.searchRank],
+    ['账号位次', metrics.accountRank],
+    ['视频位次', metrics.videoRank]
+  ]
+    .filter(([, value]) => Number(value) > 0)
+    .map(([label, value]) => ({
+      label,
+      value: formatCompactNumber(value)
+    }));
+
+  if (metrics.hotLabel) {
+    candidates.push({
+      label: '热榜信号',
+      value: String(metrics.hotLabel)
+    });
+  }
+
+  return candidates;
+}
+
+function getFindingSourceMatchDetails(finding) {
+  if (!Array.isArray(finding.sourceMatches) || !finding.sourceMatches.length) {
+    return [];
+  }
+
+  return finding.sourceMatches.map((match, index) => ({
+    label: match.sourceName || `来源 ${index + 1}`,
+    value: match.searchRank ? `#${match.searchRank}` : formatSourceType(match.sourceType)
+  }));
+}
+
+function getMetricVisual(label) {
+  const dictionary = {
+    点赞: { icon: Heart, iconClassName: 'text-rose-300' },
+    回复: { icon: MessageCircle, iconClassName: 'text-sky-300' },
+    转发: { icon: Repeat2, iconClassName: 'text-violet-300' },
+    浏览: { icon: Eye, iconClassName: 'text-cyan-300' },
+    播放: { icon: CirclePlay, iconClassName: 'text-pink-300' },
+    收藏: { icon: Bookmark, iconClassName: 'text-amber-300' },
+    弹幕: { icon: MessageCircle, iconClassName: 'text-emerald-300' },
+    搜索位次: { icon: BarChart3, iconClassName: 'text-white/68' },
+    账号位次: { icon: BarChart3, iconClassName: 'text-white/68' },
+    视频位次: { icon: BarChart3, iconClassName: 'text-white/68' }
+  };
+
+  return dictionary[label] || { icon: null, iconClassName: '' };
+}
+
+function formatAiTag(tag) {
+  const normalized = normalizeTextForCompare(tag);
+  const dictionary = {
+    relevant: { label: '相关', tone: 'good' },
+    irrelevant: { label: '不相关', tone: 'risk' },
+    credible: { label: '可信', tone: 'good' },
+    'low-credibility': { label: '可信度低', tone: 'warn' },
+    low_credibility: { label: '可信度低', tone: 'warn' },
+    official: { label: '官方', tone: 'good' },
+    verified: { label: '已核验', tone: 'good' },
+    unofficial: { label: '非官方', tone: 'warn' },
+    'non-official': { label: '非官方', tone: 'warn' },
+    heuristic: { label: '启发式判断', tone: 'info' },
+    'ai-fallback': { label: 'AI 降级', tone: 'warn' },
+    'low-engagement': { label: '低互动', tone: 'warn' },
+    'low-heat': { label: '低热度', tone: 'warn' },
+    low_engagement: { label: '低互动', tone: 'warn' },
+    low_heat: { label: '低热度', tone: 'warn' },
+    'high-heat': { label: '高热度', tone: 'good' },
+    'high-engagement': { label: '高互动', tone: 'good' },
+    moderate_heat: { label: '热度中等', tone: 'info' },
+    trending: { label: '热点上升', tone: 'good' },
+    impersonation: { label: '疑似冒充', tone: 'risk' },
+    suspicious: { label: '可疑', tone: 'risk' },
+    rumor: { label: '疑似传闻', tone: 'risk' },
+    stale: { label: '时效性弱', tone: 'warn' },
+    recent: { label: '近期内容', tone: 'good' },
+    future_date: { label: '时间异常', tone: 'risk' },
+    advertisement: { label: '广告倾向', tone: 'risk' },
+    social_media: { label: '社媒来源', tone: 'info' },
+    search_result: { label: '搜索结果', tone: 'info' },
+    'search result': { label: '搜索结果', tone: 'info' },
+    'third-party': { label: '第三方来源', tone: 'info' },
+    informational: { label: '信息型内容', tone: 'info' },
+    documentation: { label: '文档内容', tone: 'info' },
+    tutorial: { label: '教程内容', tone: 'info' },
+    generic_content: { label: '泛内容', tone: 'warn' },
+    'generic-content': { label: '泛内容', tone: 'warn' },
+    encyclopedia: { label: '百科内容', tone: 'info' },
+    product: { label: '产品信息', tone: 'info' },
+    download: { label: '下载相关', tone: 'info' }
+  };
+
+  if (dictionary[normalized]) {
+    return {
+      key: normalized,
+      ...dictionary[normalized]
+    };
+  }
+
+  return null;
+}
+
+function dedupeByKey(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    if (!item?.key || seen.has(item.key)) {
+      return false;
+    }
+    seen.add(item.key);
+    return true;
+  });
+}
+
+function buildChineseAiSummary(finding) {
+  const summary = normalizeWhitespaceSafe(finding?.aiDecision?.summary);
+  if (summary && /[\u4e00-\u9fa5]/.test(summary)) {
+    return summary;
+  }
+
+  const snippet = normalizeWhitespaceSafe(finding?.snippet);
+  const title = normalizeWhitespaceSafe(finding?.title);
+  const decision = finding?.aiDecision || {};
+  const quality = finding?.quality || {};
+  const parts = [];
+
+  const topicSeed = snippet || title;
+  if (topicSeed) {
+    parts.push(`这条内容主要围绕“${clipText(topicSeed, 42)}”展开。`);
+  }
+
+  if (decision.isOfficial) {
+    parts.push('它带有官方信号。');
+  } else if (quality.hostName) {
+    parts.push(`主要来源为 ${quality.hostName}。`);
+  }
+
+  if (Number(quality.consensusCount || 1) > 1) {
+    parts.push(`同时被 ${quality.consensusCount} 个来源命中。`);
+  }
+
+  if (Number(finding?.view?.heatScore || 0) >= 70) {
+    parts.push(`当前热度较高，约为 ${formatScoreValue(finding.view?.heatScore)} 分。`);
+  } else if (Number(finding?.view?.heatScore || 0) > 0) {
+    parts.push(`当前热度约为 ${formatScoreValue(finding.view?.heatScore)} 分。`);
+  }
+
+  if (decision.credibility) {
+    parts.push(`可信度为${formatCredibility(decision.credibility)}。`);
+  }
+
+  if (decision.suspectedImpersonation) {
+    parts.push('同时存在疑似冒充或误导风险。');
+  }
+
+  if (parts.length) {
+    return parts.join('');
+  }
+
+  if (snippet) {
+    return `这条内容来自 ${finding?.sourceName || '当前来源'}，摘要信息为：${clipText(snippet, 80)}。`;
+  }
+
+  if (summary) {
+    return fallbackTranslateSummary(summary);
+  }
+
+  return '系统已抓取到这条内容，并完成了基础相关性与热度判断。';
+}
+
+function fallbackTranslateSummary(summary) {
+  let localized = summary;
+  const replacements = [
+    [/official/gi, '官方'],
+    [/relevant/gi, '相关'],
+    [/credible/gi, '可信'],
+    [/source/gi, '来源'],
+    [/announcement/gi, '公告'],
+    [/update/gi, '更新'],
+    [/release/gi, '发布'],
+    [/tutorial/gi, '教程'],
+    [/documentation/gi, '文档'],
+    [/community/gi, '社区'],
+    [/product/gi, '产品'],
+    [/feature/gi, '功能'],
+    [/agent/gi, '智能体'],
+    [/model/gi, '模型'],
+    [/search result/gi, '搜索结果'],
+    [/video/gi, '视频'],
+    [/creator/gi, '创作者']
+  ];
+
+  for (const [pattern, replacement] of replacements) {
+    localized = localized.replace(pattern, replacement);
+  }
+
+  return `AI 判断这条内容值得关注，核心信息是：${clipText(localized, 80)}。`;
+}
+
+function clipText(value, maxLength = 60) {
+  const normalized = normalizeWhitespaceSafe(value);
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).trim()}...`;
+}
+
+function buildChineseAiReason(finding) {
+  const decision = finding.aiDecision || {};
+  const quality = finding.quality || {};
+  const reasons = [];
+
+  if (decision.relevant) {
+    reasons.push(`这条内容与监控主题相关，相关性约为 ${formatScoreValue(finding.view?.relevanceScore)} 分。`);
+  } else {
+    reasons.push('这条内容与监控主题的相关性偏弱。');
+  }
+
+  if (decision.isOfficial) {
+    reasons.push('内容带有官方信号，优先级较高。');
+  } else if (quality.hostName) {
+    reasons.push(`主要来源为 ${quality.hostName}，来源类型是 ${formatHostClass(quality.hostClass)}。`);
+  }
+
+  if (decision.suspectedImpersonation) {
+    reasons.push('系统检测到疑似冒充或误导风险，建议谨慎判断。');
+  }
+
+  if (Number(quality.consensusCount || 1) > 1) {
+    reasons.push(`该热点被 ${quality.consensusCount} 个来源同时命中，多源交叉信号较强。`);
+  }
+
+  if (Number(quality.reliabilityScore || 0) > 0) {
+    reasons.push(`综合可靠性为 ${formatScoreValue(quality.reliabilityScore)} 分，可信度等级为${formatCredibility(finding.aiDecision?.credibility)}。`);
+  }
+
+  if (Number(finding.view?.heatScore || 0) > 0) {
+    reasons.push(`当前热度约为 ${formatScoreValue(finding.view.heatScore)} 分。`);
+  }
+
+  const interactionMetrics = getFindingInteractionMetrics(finding);
+  if (interactionMetrics.length) {
+    reasons.push(`已捕获的互动信号包括：${interactionMetrics.map((item) => `${item.label}${item.value}`).join('、')}。`);
+  }
+
+  const originalReason = normalizeWhitespaceSafe(decision.reason);
+  if (originalReason && /fallback|heuristic|api error|runtime error|candidate reliability/i.test(originalReason)) {
+    reasons.push('当前 AI 校验链路存在降级，系统已使用更保守的判定策略。');
+  }
+
+  if (!reasons.length) {
+    return '系统已完成相关性、可信度和热度判断，建议结合摘要与互动信号进一步确认。';
+  }
+
+  return reasons.join('');
+}
+
 function formatFindingFilter(filter) {
   if (filter === 'today') {
     return '今日新增';
@@ -2534,6 +3133,25 @@ function formatFindingFilter(filter) {
 
 function formatFindingSort(sortBy) {
   return FINDING_SORT_OPTIONS.find((option) => option.value === sortBy)?.label || '最新发现';
+}
+
+function formatHostClass(hostClass) {
+  if (hostClass === 'trusted') {
+    return '高可信来源';
+  }
+  if (hostClass === 'feed') {
+    return '订阅源';
+  }
+  if (hostClass === 'standard') {
+    return '普通来源';
+  }
+  if (hostClass === 'community') {
+    return '社区来源';
+  }
+  if (hostClass === 'low') {
+    return '低信号来源';
+  }
+  return '未知来源';
 }
 
 function formatChannels(channels = []) {
@@ -2677,6 +3295,19 @@ function formatCredibility(credibility) {
     return '可信度低';
   }
   return '可信度未知';
+}
+
+function formatCredibilityShort(credibility) {
+  if (credibility === 'high') {
+    return '高';
+  }
+  if (credibility === 'medium') {
+    return '中';
+  }
+  if (credibility === 'low') {
+    return '低';
+  }
+  return '未知';
 }
 
 function formatScoreValue(value) {

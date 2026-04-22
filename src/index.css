@@ -24,6 +24,32 @@ textarea {
   font-family: "Noto Sans SC", sans-serif;
 }
 
+select,
+option,
+optgroup {
+  color: rgba(255, 255, 255, 0.92);
+  background-color: #0b1118;
+}
+
+select {
+  color-scheme: dark;
+}
+
+select:focus,
+select:focus-visible {
+  outline: none;
+}
+
+option {
+  color: rgba(255, 255, 255, 0.92);
+  background: #0b1118;
+}
+
+optgroup {
+  font-style: normal;
+  font-weight: 600;
+}
+
 h1,
 h2,
 h3,

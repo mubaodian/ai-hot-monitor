@@ -15,6 +15,7 @@ import {
   Rss,
   Search,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   TriangleAlert,
   Workflow,
@@ -82,6 +83,52 @@ const EMPTY_SEARCH = {
   settings: ''
 };
 
+const INITIAL_FINDING_CONTROLS = {
+  sortBy: 'detected_desc',
+  timeRange: 'all',
+  sourceType: 'all',
+  heatRange: 'all',
+  reliabilityRange: 'all',
+  credibility: 'all',
+  priorityOnly: false,
+  officialOnly: false,
+  consensusOnly: false,
+  notified: 'all'
+};
+
+const FINDING_SORT_OPTIONS = [
+  { value: 'detected_desc', label: '最新发现' },
+  { value: 'published_desc', label: '最新发布时间' },
+  { value: 'heat_desc', label: '热度最高' },
+  { value: 'reliability_desc', label: '可靠性最高' },
+  { value: 'consensus_desc', label: '多源共现优先' },
+  { value: 'official_first', label: '官方信号优先' }
+];
+
+const FINDING_TIME_OPTIONS = [
+  { value: 'all', label: '全部时间' },
+  { value: '24h', label: '近 24 小时' },
+  { value: '3d', label: '近 3 天' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' }
+];
+
+const FINDING_HEAT_RANGES = [
+  { value: 'all', label: '全部热度' },
+  { value: '0_30', label: '0-30', min: 0, max: 30 },
+  { value: '31_60', label: '31-60', min: 31, max: 60 },
+  { value: '61_80', label: '61-80', min: 61, max: 80 },
+  { value: '81_100', label: '81-100', min: 81, max: 100 }
+];
+
+const FINDING_RELIABILITY_RANGES = [
+  { value: 'all', label: '全部可靠性' },
+  { value: '0_49', label: '0-49', min: 0, max: 49 },
+  { value: '50_69', label: '50-69', min: 50, max: 69 },
+  { value: '70_84', label: '70-84', min: 70, max: 84 },
+  { value: '85_100', label: '85-100', min: 85, max: 100 }
+];
+
 function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -92,6 +139,7 @@ function App() {
   const [error, setError] = useState('');
   const [activeWatcherId, setActiveWatcherId] = useState(ACTIVE_ALL);
   const [findingFilter, setFindingFilter] = useState('all');
+  const [findingControls, setFindingControls] = useState(INITIAL_FINDING_CONTROLS);
   const [settingsForm, setSettingsForm] = useState(INITIAL_SETTINGS);
   const [watcherForm, setWatcherForm] = useState(INITIAL_WATCHER);
   const [sourceForm, setSourceForm] = useState(INITIAL_SOURCE);
@@ -228,14 +276,40 @@ function App() {
     [enabledWatchers]
   );
 
+  const notificationSummaryByFindingId = useMemo(() => {
+    const summary = {};
+
+    for (const notification of appState.notifications) {
+      if (!notification.findingId) {
+        continue;
+      }
+
+      const current = summary[notification.findingId] || {
+        count: 0,
+        hasSent: false,
+        hasFailed: false
+      };
+
+      current.count += 1;
+      current.hasSent = current.hasSent || notification.status === 'sent';
+      current.hasFailed = current.hasFailed || notification.status === 'failed';
+      summary[notification.findingId] = current;
+    }
+
+    return summary;
+  }, [appState.notifications]);
+
   const sourceById = useMemo(
     () => Object.fromEntries(appState.sources.map((source) => [source.id, source])),
     [appState.sources]
   );
 
   const visibleFindings = useMemo(
-    () => appState.findings.filter((finding) => enabledWatcherIds.has(finding.watcherId)),
-    [appState.findings, enabledWatcherIds]
+    () =>
+      appState.findings
+        .filter((finding) => enabledWatcherIds.has(finding.watcherId))
+        .map((finding) => normalizeFindingForView(finding, notificationSummaryByFindingId[finding.id])),
+    [appState.findings, enabledWatcherIds, notificationSummaryByFindingId]
   );
 
   const findingById = useMemo(
@@ -252,15 +326,8 @@ function App() {
     const scoped = activeWatcher
       ? visibleFindings.filter((finding) => finding.watcherId === activeWatcher.id)
       : visibleFindings;
-
-    const sorted = [...scoped].sort(
-      (a, b) =>
-        new Date(b.detectedAt || b.publishedAt || Date.now()).getTime() -
-        new Date(a.detectedAt || a.publishedAt || Date.now()).getTime()
-    );
-
-    const relevant = sorted.filter((finding) => finding.aiDecision?.relevant !== false);
-    return relevant.length ? relevant : sorted;
+    const relevant = scoped.filter((finding) => finding.aiDecision?.relevant !== false);
+    return relevant.length ? relevant : scoped;
   }, [visibleFindings, activeWatcher]);
 
   const notificationsBase = useMemo(() => {
@@ -317,21 +384,67 @@ function App() {
   }, [appState.sources, sourcesKeyword]);
 
   const filteredFindings = useMemo(() => {
-    return findingsBase.filter((finding) => {
+    const filtered = findingsBase.filter((finding) => {
       if (findingFilter === 'today') {
-        const detectedDate = new Date(
-          finding.detectedAt || finding.publishedAt || Date.now()
-        ).toDateString();
+        const detectedDate = new Date(finding.view.primaryTimestampMs || Date.now()).toDateString();
         if (detectedDate !== new Date().toDateString()) {
           return false;
         }
       }
 
       if (findingFilter === 'urgent') {
-        const heatScore = Number(finding.aiDecision?.heatScore || 0);
-        if (!finding.aiDecision?.shouldNotify && heatScore < 70) {
+        if (!finding.view.isPriority) {
           return false;
         }
+      }
+
+      if (!matchesFindingTimeRange(finding, findingControls.timeRange)) {
+        return false;
+      }
+
+      if (findingControls.sourceType !== 'all' && finding.sourceType !== findingControls.sourceType) {
+        return false;
+      }
+
+      if (!matchesFindingScoreRange(finding.view.heatScore, findingControls.heatRange, FINDING_HEAT_RANGES)) {
+        return false;
+      }
+
+      if (
+        !matchesFindingScoreRange(
+          Number(finding.quality?.reliabilityScore || 0),
+          findingControls.reliabilityRange,
+          FINDING_RELIABILITY_RANGES
+        )
+      ) {
+        return false;
+      }
+
+      if (
+        findingControls.credibility !== 'all' &&
+        (finding.aiDecision?.credibility || 'unknown') !== findingControls.credibility
+      ) {
+        return false;
+      }
+
+      if (findingControls.priorityOnly && !finding.view.isPriority) {
+        return false;
+      }
+
+      if (findingControls.officialOnly && !finding.aiDecision?.isOfficial) {
+        return false;
+      }
+
+      if (findingControls.consensusOnly && Number(finding.quality?.consensusCount || 1) < 2) {
+        return false;
+      }
+
+      if (findingControls.notified === 'notified' && !finding.view.hasNotification) {
+        return false;
+      }
+
+      if (findingControls.notified === 'unnotified' && finding.view.hasNotification) {
+        return false;
       }
 
       if (!findingsKeyword) {
@@ -343,7 +456,9 @@ function App() {
         .toLowerCase()
         .includes(findingsKeyword);
     });
-  }, [findingsBase, findingFilter, findingsKeyword]);
+
+    return sortFindings(filtered, findingControls.sortBy);
+  }, [findingsBase, findingFilter, findingControls, findingsKeyword]);
 
   const filteredNotifications = useMemo(() => {
     return notificationsBase.filter((notification) => {
@@ -369,16 +484,12 @@ function App() {
   const todayHotspots = useMemo(() => {
     const today = new Date().toDateString();
     return visibleFindings.filter(
-      (finding) =>
-        new Date(finding.detectedAt || finding.publishedAt || Date.now()).toDateString() === today
+      (finding) => new Date(finding.view.primaryTimestampMs || Date.now()).toDateString() === today
     ).length;
   }, [visibleFindings]);
 
   const urgentHotspots = useMemo(
-    () =>
-      visibleFindings.filter(
-        (finding) => finding.aiDecision?.shouldNotify || Number(finding.aiDecision?.heatScore || 0) >= 70
-      ).length,
+    () => visibleFindings.filter((finding) => finding.view.isPriority).length,
     [visibleFindings]
   );
 
@@ -395,6 +506,27 @@ function App() {
   const notificationPage = paginate(filteredNotifications, pages.notifications, PAGE_SIZE);
   const watcherPage = paginate(filteredWatchers, pages.watchers, PAGE_SIZE);
   const sourcePage = paginate(filteredSources, pages.sources, PAGE_SIZE);
+  const findingSourceTypeOptions = useMemo(
+    () =>
+      [...new Set(visibleFindings.map((finding) => finding.sourceType))]
+        .sort((left, right) => formatSourceType(left).localeCompare(formatSourceType(right), 'zh-CN'))
+        .map((type) => ({
+          value: type,
+          label: formatSourceType(type)
+        })),
+    [visibleFindings]
+  );
+  const activeFindingControlCount = useMemo(
+    () => countActiveFindingControls(findingControls),
+    [findingControls]
+  );
+
+  function updateFindingControls(patch) {
+    setFindingControls((current) =>
+      typeof patch === 'function' ? patch(current) : { ...current, ...patch }
+    );
+    setPages((current) => ({ ...current, findings: 1 }));
+  }
 
   async function requestJson(url, options) {
     const response = await fetch(url, options);
@@ -693,13 +825,19 @@ function App() {
               element={
                 <FindingsPage
                   activeWatcher={activeWatcher}
+                  activeFilterCount={activeFindingControlCount}
+                  controls={findingControls}
                   filter={findingFilter}
+                  sourceTypeOptions={findingSourceTypeOptions}
                   page={findingPage}
+                  total={findingsBase.length}
                   watcherById={watcherById}
                   onCopyLink={copyLink}
                   onOpenAll={() => setActiveWatcherId(ACTIVE_ALL)}
                   onPageChange={(page) => setPages((current) => ({ ...current, findings: page }))}
+                  onResetControls={() => updateFindingControls(INITIAL_FINDING_CONTROLS)}
                   onSetFilter={setFindingFilter}
+                  onUpdateControls={updateFindingControls}
                 />
               }
             />
@@ -708,13 +846,19 @@ function App() {
               element={
                 <FindingsPage
                   activeWatcher={activeWatcher}
+                  activeFilterCount={activeFindingControlCount}
+                  controls={findingControls}
                   filter={findingFilter}
+                  sourceTypeOptions={findingSourceTypeOptions}
                   page={findingPage}
+                  total={findingsBase.length}
                   watcherById={watcherById}
                   onCopyLink={copyLink}
                   onOpenAll={() => setActiveWatcherId(ACTIVE_ALL)}
                   onPageChange={(page) => setPages((current) => ({ ...current, findings: page }))}
+                  onResetControls={() => updateFindingControls(INITIAL_FINDING_CONTROLS)}
                   onSetFilter={setFindingFilter}
+                  onUpdateControls={updateFindingControls}
                 />
               }
             />
@@ -1024,14 +1168,22 @@ function Panel({ children, className }) {
 
 function FindingsPage({
   activeWatcher,
+  activeFilterCount,
+  controls,
   filter,
   page,
+  sourceTypeOptions,
+  total,
   watcherById,
   onCopyLink,
   onOpenAll,
   onPageChange,
-  onSetFilter
+  onResetControls,
+  onSetFilter,
+  onUpdateControls
 }) {
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+
   return (
     <PageShell
       kicker="Route /findings"
@@ -1041,6 +1193,8 @@ function FindingsPage({
         <div className="flex flex-wrap items-center gap-2">
           <ScopeChip active>{activeWatcher ? `${activeWatcher.name} / ${activeWatcher.query}` : '全部任务'}</ScopeChip>
           <ScopeChip>{formatFindingFilter(filter)}</ScopeChip>
+          <ScopeChip>{formatFindingSort(controls.sortBy)}</ScopeChip>
+          {activeFilterCount ? <ScopeChip>{activeFilterCount} 个细筛条件</ScopeChip> : null}
           {activeWatcher ? (
             <GhostButton onClick={onOpenAll}>查看全部任务热点</GhostButton>
           ) : null}
@@ -1049,16 +1203,185 @@ function FindingsPage({
       }
     >
       <Panel>
-        <div className="mb-4 flex flex-wrap gap-2">
-          <FilterButton active={filter === 'all'} onClick={() => onSetFilter('all')}>
-            全部
-          </FilterButton>
-          <FilterButton active={filter === 'today'} onClick={() => onSetFilter('today')}>
-            今日新增
-          </FilterButton>
-          <FilterButton active={filter === 'urgent'} onClick={() => onSetFilter('urgent')}>
-            高优先级
-          </FilterButton>
+        <div className="mb-5">
+          <div className="overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="flex min-w-max items-center gap-2">
+              <ToolbarPill
+                active={filter === 'all'}
+                icon={Sparkles}
+                onClick={() => onSetFilter('all')}
+              >
+                全部热点
+              </ToolbarPill>
+              <ToolbarPill
+                active={filter === 'today'}
+                icon={Clock3}
+                onClick={() => onSetFilter('today')}
+              >
+                今日新增
+              </ToolbarPill>
+              <ToolbarPill
+                active={filter === 'urgent'}
+                icon={TriangleAlert}
+                onClick={() => onSetFilter('urgent')}
+              >
+                高优先级
+              </ToolbarPill>
+
+              <div className="mx-1 h-6 w-px bg-white/8" />
+
+              {FINDING_SORT_OPTIONS.map((option) => (
+                <ToolbarPill
+                  key={option.value}
+                  active={controls.sortBy === option.value}
+                  onClick={() => onUpdateControls({ sortBy: option.value })}
+                >
+                  {option.label}
+                </ToolbarPill>
+              ))}
+
+              <div className="mx-1 h-6 w-px bg-white/8" />
+
+              <ToolbarPill
+                active={filterPanelOpen || activeFilterCount > 0}
+                icon={SlidersHorizontal}
+                onClick={() => setFilterPanelOpen((current) => !current)}
+              >
+                筛选{activeFilterCount ? ` ${activeFilterCount}` : ''}
+              </ToolbarPill>
+              <ToolbarPill
+                icon={RefreshCw}
+                onClick={() => {
+                  onSetFilter('all');
+                  onResetControls();
+                  setFilterPanelOpen(false);
+                }}
+              >
+                重置
+              </ToolbarPill>
+              <ToolbarPill passive>{page.total} / {total}</ToolbarPill>
+            </div>
+          </div>
+
+          {filterPanelOpen ? (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="mt-3 rounded-[24px] border border-white/8 bg-white/[0.025] p-4"
+            >
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <Field label="时间范围">
+                  <select
+                    className={SELECT_CLASS}
+                    value={controls.timeRange}
+                    onChange={(event) => onUpdateControls({ timeRange: event.target.value })}
+                  >
+                    {FINDING_TIME_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="来源类型">
+                  <select
+                    className={SELECT_CLASS}
+                    value={controls.sourceType}
+                    onChange={(event) => onUpdateControls({ sourceType: event.target.value })}
+                  >
+                    <option value="all">全部来源类型</option>
+                    {sourceTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="热度区间">
+                  <select
+                    className={SELECT_CLASS}
+                    value={controls.heatRange}
+                    onChange={(event) => onUpdateControls({ heatRange: event.target.value })}
+                  >
+                    {FINDING_HEAT_RANGES.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="可靠性区间">
+                  <select
+                    className={SELECT_CLASS}
+                    value={controls.reliabilityRange}
+                    onChange={(event) => onUpdateControls({ reliabilityRange: event.target.value })}
+                  >
+                    {FINDING_RELIABILITY_RANGES.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="可信度">
+                  <select
+                    className={SELECT_CLASS}
+                    value={controls.credibility}
+                    onChange={(event) => onUpdateControls({ credibility: event.target.value })}
+                  >
+                    <option value="all">全部可信度</option>
+                    <option value="high">可信度高</option>
+                    <option value="medium">可信度中</option>
+                    <option value="low">可信度低</option>
+                  </select>
+                </Field>
+
+                <Field label="通知状态">
+                  <select
+                    className={SELECT_CLASS}
+                    value={controls.notified}
+                    onChange={(event) => onUpdateControls({ notified: event.target.value })}
+                  >
+                    <option value="all">全部通知状态</option>
+                    <option value="notified">已通知</option>
+                    <option value="unnotified">未通知</option>
+                  </select>
+                </Field>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <FilterButton
+                  active={controls.priorityOnly}
+                  onClick={() =>
+                    onUpdateControls((current) => ({ ...current, priorityOnly: !current.priorityOnly }))
+                  }
+                >
+                  只看高优先级
+                </FilterButton>
+                <FilterButton
+                  active={controls.officialOnly}
+                  onClick={() =>
+                    onUpdateControls((current) => ({ ...current, officialOnly: !current.officialOnly }))
+                  }
+                >
+                  只看官方信号
+                </FilterButton>
+                <FilterButton
+                  active={controls.consensusOnly}
+                  onClick={() =>
+                    onUpdateControls((current) => ({ ...current, consensusOnly: !current.consensusOnly }))
+                  }
+                >
+                  只看多源共现
+                </FilterButton>
+              </div>
+            </motion.div>
+          ) : null}
         </div>
 
         <div className="space-y-4">
@@ -1672,6 +1995,7 @@ function FindingCard({ finding, watcher, onCopyLink }) {
           {finding.quality?.hostName ? <ScopeChip>{finding.quality.hostName}</ScopeChip> : null}
           {finding.aiDecision?.isOfficial ? <ScopeChip active>官方信号</ScopeChip> : null}
           {finding.quality?.consensusCount > 1 ? <ScopeChip active>多源共现</ScopeChip> : null}
+          {finding.view?.hasNotification ? <ScopeChip active>已通知 {finding.view.notificationCount}</ScopeChip> : null}
           {finding.aiDecision?.suspectedImpersonation ? <ScopeChip>疑似冒充</ScopeChip> : null}
         </div>
 
@@ -1699,7 +2023,7 @@ function FindingCard({ finding, watcher, onCopyLink }) {
             </div>
 
             <div className="flex max-w-[28rem] flex-wrap justify-start gap-x-3 gap-y-1 text-[11px] leading-5 text-white/42 tabular-nums sm:justify-end">
-              <FindingMetaItem label="热度" value={finding.aiDecision?.heatScore ?? '--'} />
+              <FindingMetaItem label="热度" value={formatScoreValue(finding.view?.heatScore)} />
               <FindingMetaItem label="可靠性" value={finding.quality?.reliabilityScore ?? '--'} />
               <FindingMetaItem label="多源" value={finding.quality?.consensusCount ?? 1} />
               <FindingMetaItem label="可信度" value={formatCredibility(finding.aiDecision?.credibility)} />
@@ -1842,6 +2166,28 @@ function FilterButton({ active, children, onClick }) {
     >
       {children}
     </button>
+  );
+}
+
+function ToolbarPill({ active = false, children, className, icon: Icon, onClick, passive = false }) {
+  const Component = passive ? 'div' : 'button';
+
+  return (
+    <Component
+      {...(passive ? {} : { type: 'button', onClick })}
+      className={cn(
+        'inline-flex h-11 items-center gap-2 rounded-full border px-4 text-sm whitespace-nowrap transition',
+        passive
+          ? 'border-white/8 bg-white/[0.035] text-white/44'
+          : active
+            ? 'border-[#4f7fff]/28 bg-[linear-gradient(135deg,rgba(76,116,255,0.2),rgba(76,116,255,0.08))] text-[#dbe4ff] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+            : 'border-white/8 bg-white/[0.03] text-white/58 hover:border-white/14 hover:bg-white/[0.05] hover:text-white/82',
+        className
+      )}
+    >
+      {Icon ? <Icon className="h-4 w-4" /> : null}
+      <span>{children}</span>
+    </Component>
   );
 }
 
@@ -2009,6 +2355,173 @@ function isQueryCapableSource(source) {
   return false;
 }
 
+function normalizeFindingForView(finding, notificationSummary) {
+  const heatScore = normalizeFindingScore(finding.aiDecision?.heatScore);
+  const relevanceScore = normalizeFindingScore(finding.aiDecision?.relevanceScore);
+  const detectedAtMs = toTimestamp(finding.detectedAt);
+  const publishedAtMs = toTimestamp(finding.publishedAt);
+  const primaryTimestampMs = detectedAtMs || publishedAtMs || 0;
+  const hasNotification = Boolean(notificationSummary?.count);
+
+  return {
+    ...finding,
+    view: {
+      heatScore,
+      relevanceScore,
+      detectedAtMs,
+      publishedAtMs,
+      primaryTimestampMs,
+      credibilityRank: credibilityRank(finding.aiDecision?.credibility),
+      hasNotification,
+      notificationCount: notificationSummary?.count || 0,
+      isPriority: Boolean(finding.aiDecision?.shouldNotify) || heatScore >= 70
+    }
+  };
+}
+
+function normalizeFindingScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+
+  const normalized = number >= 0 && number <= 1 ? number * 100 : number;
+  return Math.max(0, Math.min(normalized, 100));
+}
+
+function toTimestamp(value) {
+  if (!value) {
+    return 0;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function credibilityRank(credibility) {
+  if (credibility === 'high') {
+    return 3;
+  }
+  if (credibility === 'medium') {
+    return 2;
+  }
+  if (credibility === 'low') {
+    return 1;
+  }
+  return 0;
+}
+
+function matchesFindingTimeRange(finding, range) {
+  if (range === 'all') {
+    return true;
+  }
+
+  const timestamp = finding.view.primaryTimestampMs;
+  if (!timestamp) {
+    return false;
+  }
+
+  const rangeMsMap = {
+    '24h': 24 * 60 * 60 * 1000,
+    '3d': 3 * 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000
+  };
+
+  return Date.now() - timestamp <= (rangeMsMap[range] || 0);
+}
+
+function matchesFindingScoreRange(score, range, options) {
+  if (range === 'all') {
+    return true;
+  }
+
+  const option = options.find((item) => item.value === range);
+  if (!option) {
+    return true;
+  }
+
+  return score >= option.min && score <= option.max;
+}
+
+function sortFindings(findings, sortBy) {
+  const sorted = [...findings];
+
+  sorted.sort((left, right) => {
+    if (sortBy === 'published_desc') {
+      const difference =
+        (right.view.publishedAtMs || right.view.primaryTimestampMs) -
+        (left.view.publishedAtMs || left.view.primaryTimestampMs);
+      return difference || right.view.primaryTimestampMs - left.view.primaryTimestampMs;
+    }
+
+    if (sortBy === 'heat_desc') {
+      const difference = right.view.heatScore - left.view.heatScore;
+      return difference || right.view.primaryTimestampMs - left.view.primaryTimestampMs;
+    }
+
+    if (sortBy === 'reliability_desc') {
+      const difference =
+        Number(right.quality?.reliabilityScore || 0) - Number(left.quality?.reliabilityScore || 0);
+      return difference || right.view.primaryTimestampMs - left.view.primaryTimestampMs;
+    }
+
+    if (sortBy === 'consensus_desc') {
+      const difference =
+        Number(right.quality?.consensusCount || 1) - Number(left.quality?.consensusCount || 1);
+      return difference || right.view.primaryTimestampMs - left.view.primaryTimestampMs;
+    }
+
+    if (sortBy === 'official_first') {
+      const difference = Number(Boolean(right.aiDecision?.isOfficial)) - Number(Boolean(left.aiDecision?.isOfficial));
+      if (difference) {
+        return difference;
+      }
+
+      const heatDifference = right.view.heatScore - left.view.heatScore;
+      return heatDifference || right.view.primaryTimestampMs - left.view.primaryTimestampMs;
+    }
+
+    return right.view.primaryTimestampMs - left.view.primaryTimestampMs;
+  });
+
+  return sorted;
+}
+
+function countActiveFindingControls(controls) {
+  let count = 0;
+
+  if (controls.timeRange !== 'all') {
+    count += 1;
+  }
+  if (controls.sourceType !== 'all') {
+    count += 1;
+  }
+  if (controls.heatRange !== 'all') {
+    count += 1;
+  }
+  if (controls.reliabilityRange !== 'all') {
+    count += 1;
+  }
+  if (controls.credibility !== 'all') {
+    count += 1;
+  }
+  if (controls.priorityOnly) {
+    count += 1;
+  }
+  if (controls.officialOnly) {
+    count += 1;
+  }
+  if (controls.consensusOnly) {
+    count += 1;
+  }
+  if (controls.notified !== 'all') {
+    count += 1;
+  }
+
+  return count;
+}
+
 function formatFindingFilter(filter) {
   if (filter === 'today') {
     return '今日新增';
@@ -2017,6 +2530,10 @@ function formatFindingFilter(filter) {
     return '高优先级';
   }
   return '全部热点';
+}
+
+function formatFindingSort(sortBy) {
+  return FINDING_SORT_OPTIONS.find((option) => option.value === sortBy)?.label || '最新发现';
 }
 
 function formatChannels(channels = []) {
@@ -2162,6 +2679,15 @@ function formatCredibility(credibility) {
   return '可信度未知';
 }
 
+function formatScoreValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '--';
+  }
+
+  return Math.round(number);
+}
+
 function formatBrowserPermission(permission) {
   if (permission === 'granted') {
     return '已授权';
@@ -2199,6 +2725,9 @@ function getSourceConfigHint(type) {
 
 const INPUT_CLASS =
   'h-12 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-white outline-none transition placeholder:text-white/24 focus:border-[#60ebc3]/28 focus:bg-white/[0.045]';
+
+const SELECT_CLASS =
+  'h-12 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-white outline-none transition focus:border-[#60ebc3]/28 focus:bg-white/[0.045]';
 
 const TEXTAREA_CLASS =
   'w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-white outline-none transition placeholder:text-white/24 focus:border-[#60ebc3]/28 focus:bg-white/[0.045]';

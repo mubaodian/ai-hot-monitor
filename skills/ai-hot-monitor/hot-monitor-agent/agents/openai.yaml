@@ -1,0 +1,7 @@
+interface:
+  display_name: "热点监控 Agent"
+  short_description: "独立运行的多源热点监控与巡检技能"
+  default_prompt: "Use $hot-monitor-agent to monitor AI topics, manage watchers and sources, and run local scheduled sweeps without relying on a web server."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,33 @@
+{
+  "name": "ai-hot-monitor",
+  "version": "1.0.0",
+  "description": "Self-contained Python skills for discovering and monitoring hot topics",
+  "type": "skill",
+  "skills": [
+    {
+      "id": "monitor-topic",
+      "name": "Monitor Topic",
+      "description": "Create a monitoring task for a specific topic or query"
+    },
+    {
+      "id": "search-findings",
+      "name": "Search Findings",
+      "description": "Search for hot topics and findings across information sources"
+    },
+    {
+      "id": "get-status",
+      "name": "Get Monitoring Status",
+      "description": "Get current monitoring tasks and latest findings"
+    },
+    {
+      "id": "configure-sources",
+      "name": "Configure Sources",
+      "description": "Enable, disable, or configure information sources"
+    },
+    {
+      "id": "fetch-item-details",
+      "name": "Fetch Item Details",
+      "description": "Get detailed information about a specific finding"
+    }
+  ]
+}
